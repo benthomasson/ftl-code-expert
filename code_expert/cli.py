@@ -321,7 +321,7 @@ def explain(ctx):
 
 
 @explain.command("file")
-@click.argument("file_path", type=click.Path(exists=True))
+@click.argument("file_path", type=click.Path())
 @click.pass_context
 def explain_file(ctx, file_path):
     """Explain a file's purpose, structure, and key patterns."""
@@ -332,7 +332,17 @@ def explain_file(ctx, file_path):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
+    # Resolve path: try as-is first, then relative to repo root
     abs_path = os.path.abspath(file_path)
+    if not os.path.isfile(abs_path):
+        repo_resolved = os.path.join(os.path.abspath(repo_path), file_path)
+        if os.path.isfile(repo_resolved):
+            abs_path = repo_resolved
+        else:
+            click.echo(f"Error: File not found: {file_path}", err=True)
+            click.echo(f"  Tried: {abs_path}", err=True)
+            click.echo(f"  Tried: {repo_resolved}", err=True)
+            sys.exit(1)
     content = get_file_content(abs_path)
     if content is None:
         click.echo(f"Error: Cannot read file: {file_path}", err=True)
@@ -910,25 +920,41 @@ def _run_general_topic(ctx, topic, model, repo_path):
 @click.option("--batch-size", type=int, default=5, help="Entries per LLM batch (default: 5)")
 @click.option("--output", default="proposed-beliefs.md", help="Output file")
 @click.option("--model", "-m", default=None, help="Override model")
+@click.option("--entry", "entry_paths", multiple=True, type=click.Path(exists=True),
+              help="Process specific entry file(s) instead of all entries")
 @click.pass_context
-def propose_beliefs(ctx, batch_size, output, model):
+def propose_beliefs(ctx, batch_size, output, model, entry_paths):
     """Extract candidate beliefs from entries for human review."""
     if model is None:
         model = ctx.obj["model"]
-
-    input_dir = Path("entries")
-    if not input_dir.exists():
-        click.echo("No entries/ directory found. Run explorations first.")
-        sys.exit(1)
 
     if not check_model_available(model):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
-    entries = sorted(input_dir.rglob("*.md"))
+    # Collect entries
+    if entry_paths:
+        entries = [Path(p) for p in entry_paths]
+    else:
+        input_dir = Path("entries")
+        if not input_dir.exists():
+            click.echo("No entries/ directory found. Run explorations first.")
+            sys.exit(1)
+        entries = sorted(input_dir.rglob("*.md"))
+
     if not entries:
-        click.echo("No .md files in entries/")
+        click.echo("No .md files found.")
         return
+
+    # Load existing belief IDs to tell the LLM what already exists
+    existing_ids = set()
+    beliefs_path = Path("beliefs.md")
+    if beliefs_path.exists():
+        beliefs_text = beliefs_path.read_text()
+        existing_ids = set(re.findall(r"^## (\S+)", beliefs_text, re.MULTILINE))
+
+    if existing_ids:
+        click.echo(f"Found {len(existing_ids)} existing beliefs (will skip duplicates)")
 
     click.echo(f"Reading {len(entries)} entries...")
 
@@ -948,10 +974,21 @@ def propose_beliefs(ctx, batch_size, output, model):
 
     click.echo(f"Processing {len(batches)} batches (batch size: {batch_size})...")
 
+    # Build existing beliefs context for the prompt
+    existing_context = ""
+    if existing_ids:
+        existing_context = (
+            "\n\n## Already Accepted Beliefs\n\n"
+            "The following belief IDs already exist. Do NOT propose beliefs with these IDs "
+            "or that duplicate their meaning under different names:\n\n"
+            + "\n".join(f"- `{bid}`" for bid in sorted(existing_ids))
+            + "\n"
+        )
+
     all_proposals = []
     for i, batch_text in enumerate(batches):
         click.echo(f"  Batch {i + 1}/{len(batches)}...")
-        prompt = PROPOSE_BELIEFS_CODE.format(entries=batch_text)
+        prompt = PROPOSE_BELIEFS_CODE.format(entries=batch_text) + existing_context
         try:
             result = invoke_sync(prompt, model=model, timeout=600)
             all_proposals.append(result)
@@ -959,17 +996,47 @@ def propose_beliefs(ctx, batch_size, output, model):
             click.echo(f"  ERROR: {e}")
             continue
 
+    # Filter out proposals whose IDs already exist
+    filtered_proposals = []
+    skipped = 0
+    for proposal in all_proposals:
+        lines = proposal.split("\n")
+        filtered_lines = []
+        skip_until_next = False
+        for line in lines:
+            m = re.match(r"^### \[?(?:ACCEPT|REJECT)\]? (\S+)", line)
+            if m:
+                belief_id = m.group(1)
+                if belief_id in existing_ids:
+                    skip_until_next = True
+                    skipped += 1
+                    continue
+                else:
+                    skip_until_next = False
+            if skip_until_next:
+                # Skip lines until the next ### header
+                if line.startswith("### "):
+                    skip_until_next = False
+                    filtered_lines.append(line)
+                continue
+            filtered_lines.append(line)
+        filtered_proposals.append("\n".join(filtered_lines))
+
+    if skipped:
+        click.echo(f"  Filtered {skipped} already-accepted beliefs")
+
     # Write proposals file
+    source_desc = ", ".join(str(e) for e in entries) if entry_paths else f"{len(entries)} entries from entries/"
     output_path = Path(output)
     with output_path.open("w") as f:
         f.write(f"# Proposed Beliefs\n\n")
         f.write(f"**Generated:** {date.today().isoformat()}\n")
-        f.write(f"**Source:** {len(entries)} entries from entries/\n")
+        f.write(f"**Source:** {source_desc}\n")
         f.write(f"**Model:** {model}\n\n")
         f.write("Edit each entry: change `[ACCEPT/REJECT]` to `[ACCEPT]` or `[REJECT]`.\n")
         f.write("Then run: `code-expert accept-beliefs`\n\n")
         f.write("---\n\n")
-        for proposal in all_proposals:
+        for proposal in filtered_proposals:
             f.write(proposal)
             f.write("\n\n")
 
