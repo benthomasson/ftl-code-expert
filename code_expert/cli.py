@@ -922,8 +922,10 @@ def _run_general_topic(ctx, topic, model, repo_path):
 @click.option("--model", "-m", default=None, help="Override model")
 @click.option("--entry", "entry_paths", multiple=True, type=click.Path(exists=True),
               help="Process specific entry file(s) instead of all entries")
+@click.option("--all", "process_all", is_flag=True,
+              help="Re-process all entries (ignore processed tracking)")
 @click.pass_context
-def propose_beliefs(ctx, batch_size, output, model, entry_paths):
+def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all):
     """Extract candidate beliefs from entries for human review."""
     if model is None:
         model = ctx.obj["model"]
@@ -946,12 +948,25 @@ def propose_beliefs(ctx, batch_size, output, model, entry_paths):
         click.echo("No .md files found.")
         return
 
+    # Filter out already-processed entries (unless --all or --entry)
+    processed_path = Path(PROJECT_DIR) / "proposed-entries.json"
+    processed = _load_processed(processed_path)
+    if not process_all and not entry_paths:
+        total = len(entries)
+        entries = _filter_unprocessed(entries, processed)
+        skipped = total - len(entries)
+        if skipped:
+            click.echo(f"Skipping {skipped} already-processed entries (use --all to reprocess)")
+        if not entries:
+            click.echo("No new entries to process.")
+            return
+
     # Load existing belief IDs to tell the LLM what already exists
     existing_ids = set()
     beliefs_path = Path("beliefs.md")
     if beliefs_path.exists():
         beliefs_text = beliefs_path.read_text()
-        existing_ids = set(re.findall(r"^## (\S+)", beliefs_text, re.MULTILINE))
+        existing_ids = set(re.findall(r"^### ([\w-]+)", beliefs_text, re.MULTILINE))
 
     if existing_ids:
         click.echo(f"Found {len(existing_ids)} existing beliefs (will skip duplicates)")
@@ -1040,9 +1055,51 @@ def propose_beliefs(ctx, batch_size, output, model, entry_paths):
             f.write(proposal)
             f.write("\n\n")
 
+    # Record processed entries
+    _save_processed(processed_path, entries, processed)
+
     click.echo(f"\nWrote {output_path}")
     click.echo("Review the file, mark entries as [ACCEPT] or [REJECT], then run:")
     click.echo("  code-expert accept-beliefs")
+
+
+def _load_processed(path: Path) -> dict[str, str]:
+    """Load processed entries tracking {path: content_hash}."""
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+
+def _save_processed(path: Path, entries: list[Path], existing: dict[str, str]):
+    """Record entries as processed by content hash."""
+    import hashlib
+    updated = dict(existing)
+    for entry_path in entries:
+        content = entry_path.read_text()
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        updated[str(entry_path)] = content_hash
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(updated, indent=2) + "\n")
+
+
+def _filter_unprocessed(entries: list[Path], processed: dict[str, str]) -> list[Path]:
+    """Return entries that are new or modified since last propose."""
+    import hashlib
+    unprocessed = []
+    for entry_path in entries:
+        key = str(entry_path)
+        if key not in processed:
+            unprocessed.append(entry_path)
+            continue
+        # Re-process if content changed
+        content = entry_path.read_text()
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        if content_hash != processed[key]:
+            unprocessed.append(entry_path)
+    return unprocessed
 
 
 # --- accept-beliefs ---
