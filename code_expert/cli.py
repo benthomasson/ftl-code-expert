@@ -968,6 +968,16 @@ def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all):
     if existing_ids:
         click.echo(f"Found {len(existing_ids)} existing beliefs (will skip duplicates)")
 
+    # Compute belief embeddings once for all batches (if fastembed available)
+    belief_vectors = None
+    if existing_beliefs and _has_embeddings():
+        click.echo("Computing belief embeddings for semantic dedup...")
+        cache_path = Path(PROJECT_DIR) / "belief-vectors.json"
+        belief_vectors = _get_belief_embeddings(existing_beliefs, cache_path)
+        click.echo(f"  {len(belief_vectors)} belief vectors ready")
+    elif existing_beliefs:
+        click.echo("(install fastembed for semantic dedup: uv pip install 'code-expert[embeddings]')")
+
     click.echo(f"Reading {len(entries)} entries...")
 
     # Batch entries — track paths per batch for relevance scoring
@@ -997,6 +1007,7 @@ def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all):
         click.echo(f"  Batch {i + 1}/{len(batches)}...")
         existing_context = _build_dedup_context(
             existing_beliefs, batch_paths[i], batch_text,
+            belief_vectors=belief_vectors,
         )
         prompt = PROPOSE_BELIEFS_CODE.format(entries=batch_text) + existing_context
         try:
@@ -1183,34 +1194,142 @@ def _load_existing_beliefs(beliefs_path: Path) -> list[dict]:
     return beliefs
 
 
-def _build_dedup_context(
-    existing_beliefs: list[dict],
-    batch_entry_paths: list[str],
-    batch_text: str,
-    max_detailed: int = 50,
-    max_compact: int = 200,
-) -> str:
-    """Build per-batch dedup context: relevant beliefs with text, rest as compact IDs.
+def _has_embeddings() -> bool:
+    """Check if fastembed is available."""
+    try:
+        import numpy  # noqa: F401
+        from fastembed import TextEmbedding  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
-    Prioritizes beliefs whose source matches batch entries, then scores
-    remaining beliefs by keyword overlap with batch content. Detailed
-    beliefs include claim text for semantic dedup; compact beliefs are
-    comma-separated IDs for exact-ID awareness.
+
+# Cache the embedding model across calls within a session
+_embed_model = None
+
+
+def _get_embed_model():
+    """Lazy-load the fastembed model."""
+    global _embed_model
+    if _embed_model is None:
+        from fastembed import TextEmbedding
+        _embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _embed_model
+
+
+def _load_belief_vectors(cache_path: Path) -> dict[str, list[float]]:
+    """Load cached belief vectors from JSON."""
+    if cache_path.exists():
+        try:
+            return json.loads(cache_path.read_text())
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return {}
+
+
+def _save_belief_vectors(cache_path: Path, vectors: dict[str, list[float]]):
+    """Save belief vectors to JSON cache."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(vectors))
+
+
+def _get_belief_embeddings(
+    beliefs: list[dict], cache_path: Path,
+) -> dict[str, list[float]]:
+    """Get embeddings for all beliefs, using cache for known ones.
+
+    Cache key is belief ID. Cache is invalidated per-belief when text changes
+    (tracked by a text hash suffix in the cache key).
     """
-    if not existing_beliefs:
-        return ""
+    import hashlib
 
-    # Score each belief for relevance to this batch
+    model = _get_embed_model()
+    cached = _load_belief_vectors(cache_path)
+
+    # Build map of belief_id -> expected cache key (id + text hash)
+    def _cache_key(belief):
+        text_hash = hashlib.sha256(belief["text"].encode()).hexdigest()[:8]
+        return f"{belief['id']}:{text_hash}"
+
+    # Find beliefs that need embedding
+    needed = []
+    needed_keys = []
+    result = {}
+    for belief in beliefs:
+        key = _cache_key(belief)
+        if key in cached:
+            result[belief["id"]] = cached[key]
+        else:
+            needed.append(belief)
+            needed_keys.append(key)
+
+    # Embed missing beliefs
+    if needed:
+        texts = [b["text"] for b in needed]
+        vectors = list(model.embed(texts))
+        for belief, key, vec in zip(needed, needed_keys, vectors):
+            vec_list = vec.tolist()
+            cached[key] = vec_list
+            result[belief["id"]] = vec_list
+
+        # Prune stale entries from cache (IDs no longer in beliefs)
+        current_keys = {_cache_key(b) for b in beliefs}
+        cached = {k: v for k, v in cached.items() if k in current_keys}
+        _save_belief_vectors(cache_path, cached)
+
+    return result
+
+
+def _score_by_embedding(
+    beliefs: list[dict],
+    belief_vectors: dict[str, list[float]],
+    batch_text: str,
+    batch_entry_paths: list[str],
+) -> list[tuple[float, dict]]:
+    """Score beliefs by embedding similarity to batch content."""
+    import numpy as np
+
+    model = _get_embed_model()
+
+    # Embed the batch text (truncate to avoid excessive embedding time)
+    batch_summary = batch_text[:4000]
+    query_vec = np.array(list(model.embed([batch_summary]))[0], dtype=np.float32)
+
+    scored = []
+    for belief in beliefs:
+        vec = belief_vectors.get(belief["id"])
+        if vec is None:
+            scored.append((0.0, belief))
+            continue
+        belief_vec = np.array(vec, dtype=np.float32)
+        # Cosine similarity
+        dot = np.dot(query_vec, belief_vec)
+        norm = np.linalg.norm(query_vec) * np.linalg.norm(belief_vec)
+        similarity = float(dot / norm) if norm > 0 else 0.0
+        # Source match bonus
+        if belief["source"] and any(belief["source"] in p or p in belief["source"]
+                                     for p in batch_entry_paths):
+            similarity += 1.0
+        scored.append((similarity, belief))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def _score_by_keywords(
+    beliefs: list[dict],
+    batch_text: str,
+    batch_entry_paths: list[str],
+) -> list[tuple[float, dict]]:
+    """Score beliefs by keyword overlap (fallback when embeddings unavailable)."""
     batch_words = set(re.findall(r'[a-z]{3,}', batch_text.lower()))
 
     scored = []
-    for belief in existing_beliefs:
-        score = 0
-        # Source match — highest priority
+    for belief in beliefs:
+        score = 0.0
         if belief["source"] and any(belief["source"] in p or p in belief["source"]
                                      for p in batch_entry_paths):
             score += 1000
-        # Keyword overlap with batch content
         belief_words = set(re.findall(r'[a-z]{3,}', belief["text"].lower()))
         belief_words |= set(belief["id"].replace("-", " ").lower().split())
         overlap = len(batch_words & belief_words)
@@ -1218,6 +1337,35 @@ def _build_dedup_context(
         scored.append((score, belief))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def _build_dedup_context(
+    existing_beliefs: list[dict],
+    batch_entry_paths: list[str],
+    batch_text: str,
+    max_detailed: int = 50,
+    max_compact: int = 200,
+    belief_vectors: dict[str, list[float]] | None = None,
+) -> str:
+    """Build per-batch dedup context: relevant beliefs with text, rest as compact IDs.
+
+    Uses embedding similarity when belief_vectors is provided, falls back
+    to keyword overlap otherwise. Detailed beliefs include claim text for
+    semantic dedup; compact beliefs are comma-separated IDs.
+    """
+    if not existing_beliefs:
+        return ""
+
+    # Score beliefs by relevance to this batch
+    if belief_vectors:
+        scored = _score_by_embedding(
+            existing_beliefs, belief_vectors, batch_text, batch_entry_paths,
+        )
+    else:
+        scored = _score_by_keywords(
+            existing_beliefs, batch_text, batch_entry_paths,
+        )
 
     # Split into detailed (with text) and compact (ID only)
     detailed = scored[:max_detailed]
