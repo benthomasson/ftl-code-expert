@@ -272,6 +272,8 @@ def init(repo_path, domain):
 @click.pass_context
 def scan(ctx):
     """Scan a repo to identify key files and populate the exploration queue."""
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
     repo_path = _get_repo(ctx)
     model = ctx.obj["model"]
 
@@ -602,6 +604,8 @@ def topics(show_all):
 @click.pass_context
 def explore(ctx, do_skip, pick_index):
     """Explore the next topic in the queue (or --skip / --pick N)."""
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
     if do_skip:
         if skip_topic(0):
             queue = load_queue()
@@ -927,6 +931,8 @@ def _run_general_topic(ctx, topic, model, repo_path):
 @click.pass_context
 def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all):
     """Extract candidate beliefs from entries for human review."""
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
     if model is None:
         model = ctx.obj["model"]
 
