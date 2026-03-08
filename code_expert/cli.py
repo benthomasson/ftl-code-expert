@@ -1046,25 +1046,36 @@ def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all):
     if skipped:
         click.echo(f"  Filtered {skipped} already-accepted beliefs")
 
-    # Write proposals file
+    # Write proposals file (append if it already exists)
     source_desc = ", ".join(str(e) for e in entries) if entry_paths else f"{len(entries)} entries from entries/"
     output_path = Path(output)
-    with output_path.open("w") as f:
-        f.write(f"# Proposed Beliefs\n\n")
-        f.write(f"**Generated:** {date.today().isoformat()}\n")
-        f.write(f"**Source:** {source_desc}\n")
-        f.write(f"**Model:** {model}\n\n")
-        f.write("Edit each entry: change `[ACCEPT/REJECT]` to `[ACCEPT]` or `[REJECT]`.\n")
-        f.write("Then run: `code-expert accept-beliefs`\n\n")
-        f.write("---\n\n")
-        for proposal in filtered_proposals:
-            f.write(proposal)
-            f.write("\n\n")
+    if output_path.exists() and output_path.stat().st_size > 0:
+        with output_path.open("a") as f:
+            f.write(f"\n---\n\n")
+            f.write(f"**Generated:** {date.today().isoformat()}\n")
+            f.write(f"**Source:** {source_desc}\n")
+            f.write(f"**Model:** {model}\n\n")
+            for proposal in filtered_proposals:
+                f.write(proposal)
+                f.write("\n\n")
+        click.echo(f"\nAppended to {output_path}")
+    else:
+        with output_path.open("w") as f:
+            f.write("# Proposed Beliefs\n\n")
+            f.write("Edit each entry: change `[ACCEPT/REJECT]` to `[ACCEPT]` or `[REJECT]`.\n")
+            f.write("Then run: `code-expert accept-beliefs`\n\n")
+            f.write("---\n\n")
+            f.write(f"**Generated:** {date.today().isoformat()}\n")
+            f.write(f"**Source:** {source_desc}\n")
+            f.write(f"**Model:** {model}\n\n")
+            for proposal in filtered_proposals:
+                f.write(proposal)
+                f.write("\n\n")
+        click.echo(f"\nWrote {output_path}")
 
     # Record processed entries
     _save_processed(processed_path, entries, processed)
 
-    click.echo(f"\nWrote {output_path}")
     click.echo("Review the file, mark entries as [ACCEPT] or [REJECT], then run:")
     click.echo("  code-expert accept-beliefs")
 
