@@ -67,6 +67,11 @@ def _get_repo(ctx) -> str:
     return ctx.obj.get("repo", os.getcwd())
 
 
+def _get_project_dir(ctx) -> str:
+    """Resolve .code-expert directory relative to repo root."""
+    return os.path.join(_get_repo(ctx), PROJECT_DIR)
+
+
 # --- Output helpers ---
 
 
@@ -110,13 +115,13 @@ def _create_entry(topic: str, title: str, content: str) -> None:
         click.echo("WARN: entry CLI not found. Install with: uv tool install entry", err=True)
 
 
-def _enqueue_topics(response: str, source: str) -> None:
+def _enqueue_topics(response: str, source: str, project_dir: str | None = None) -> None:
     """Parse topics from model response and add to queue."""
     new_topics = parse_topics_from_response(response, source=source)
     if new_topics:
-        added = add_topics(new_topics)
+        added = add_topics(new_topics, project_dir)
         if added:
-            total = pending_count()
+            total = pending_count(project_dir)
             click.echo(f"Queued {added} new topic(s) ({total} pending)", err=True)
 
 
@@ -307,7 +312,7 @@ def scan(ctx):
     _create_entry(f"scan-{repo_name}", f"Scan: {repo_name}", result)
 
     # Enqueue topics
-    _enqueue_topics(result, source=f"scan:{repo_name}")
+    _enqueue_topics(result, source=f"scan:{repo_name}", project_dir=_get_project_dir(ctx))
 
     _emit(ctx, result)
 
@@ -373,7 +378,7 @@ def explain_file(ctx, file_path):
 
     topic_name = _sanitize_path_for_filename(rel_path)
     _create_entry(topic_name, f"File: {rel_path}", result)
-    _enqueue_topics(result, source=f"file:{rel_path}")
+    _enqueue_topics(result, source=f"file:{rel_path}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -432,7 +437,7 @@ def explain_function(ctx, target):
 
     topic_name = _sanitize_path_for_filename(rel_path) + f"-{symbol_name}"
     _create_entry(topic_name, f"Function: {symbol_name} in {rel_path}", result)
-    _enqueue_topics(result, source=f"function:{rel_path}:{symbol_name}")
+    _enqueue_topics(result, source=f"function:{rel_path}:{symbol_name}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -482,7 +487,7 @@ def explain_repo(ctx, repo_path):
         sys.exit(1)
 
     _create_entry(f"repo-{repo_name}", f"Repo Overview: {repo_name}", result)
-    _enqueue_topics(result, source="repo-overview")
+    _enqueue_topics(result, source="repo-overview", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -545,7 +550,7 @@ def explain_diff(ctx, branch, base):
 
     safe_label = diff_label.replace("/", "-")
     _create_entry(f"diff-{safe_label}", f"Diff: {diff_label}", result)
-    _enqueue_topics(result, source=f"diff:{diff_label}")
+    _enqueue_topics(result, source=f"diff:{diff_label}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -557,9 +562,10 @@ def explain_diff(ctx, branch, base):
 @cli.command()
 @click.option("--all", "show_all", is_flag=True, default=False,
               help="Show all topics including done and skipped")
-def topics(show_all):
+@click.pass_context
+def topics(ctx, show_all):
     """Show the exploration queue."""
-    queue = load_queue()
+    queue = load_queue(_get_project_dir(ctx))
 
     if not queue:
         click.echo("No topics queued. Run `code-expert scan` to discover topics.")
@@ -606,9 +612,10 @@ def explore(ctx, do_skip, pick_index):
     """Explore the next topic in the queue (or --skip / --pick N)."""
     from .caffeinate import hold as _caffeinate
     _caffeinate()
+    project_dir = _get_project_dir(ctx)
     if do_skip:
-        if skip_topic(0):
-            queue = load_queue()
+        if skip_topic(0, project_dir):
+            queue = load_queue(project_dir)
             pending = [t for t in queue if t.status == "pending"]
             if pending:
                 click.echo(f"Skipped. Next: [{pending[0].kind}] {pending[0].target}")
@@ -619,9 +626,9 @@ def explore(ctx, do_skip, pick_index):
         return
 
     if pick_index is not None:
-        topic = pop_at(pick_index)
+        topic = pop_at(pick_index, project_dir)
     else:
-        topic = pop_next()
+        topic = pop_next(project_dir)
 
     if topic is None:
         click.echo("No pending topics. Run `code-expert scan` to discover topics.")
@@ -651,7 +658,7 @@ def explore(ctx, do_skip, pick_index):
         click.echo(f"Unknown topic kind: {topic.kind}", err=True)
         sys.exit(1)
 
-    remaining = pending_count()
+    remaining = pending_count(project_dir)
     if remaining:
         click.echo(f"\n{remaining} topic(s) remaining. Run `code-expert explore` to continue.", err=True)
     else:
@@ -697,7 +704,7 @@ def _run_file_topic(ctx, topic, model, repo_path):
 
     topic_name = _sanitize_path_for_filename(rel_path)
     _create_entry(topic_name, f"File: {rel_path}", result)
-    _enqueue_topics(result, source=f"file:{rel_path}")
+    _enqueue_topics(result, source=f"file:{rel_path}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -746,7 +753,7 @@ def _run_function_topic(ctx, topic, model, repo_path):
 
     topic_name = _sanitize_path_for_filename(rel_path) + f"-{symbol_name}"
     _create_entry(topic_name, f"Function: {symbol_name} in {rel_path}", result)
-    _enqueue_topics(result, source=f"function:{rel_path}:{symbol_name}")
+    _enqueue_topics(result, source=f"function:{rel_path}:{symbol_name}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -782,7 +789,7 @@ def _run_repo_topic(ctx, topic, model, repo_path):
         sys.exit(1)
 
     _create_entry("repo-overview", "Repo Overview", result)
-    _enqueue_topics(result, source="repo-overview")
+    _enqueue_topics(result, source="repo-overview", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -828,7 +835,7 @@ def _run_diff_topic(ctx, topic, model, repo_path):
 
     safe_label = topic.target.replace("/", "-")
     _create_entry(f"diff-{safe_label}", f"Diff: {topic.target}", result)
-    _enqueue_topics(result, source=f"diff:{topic.target}")
+    _enqueue_topics(result, source=f"diff:{topic.target}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -911,7 +918,7 @@ def _run_general_topic(ctx, topic, model, repo_path):
 
     safe_label = _sanitize_path_for_filename(topic.target)
     _create_entry(f"topic-{safe_label}", f"Topic: {topic.title}", result)
-    _enqueue_topics(result, source=f"general:{topic.target}")
+    _enqueue_topics(result, source=f"general:{topic.target}", project_dir=_get_project_dir(ctx))
     _report_beliefs(result)
 
     _emit(ctx, result)
@@ -1450,7 +1457,8 @@ def _accept_batch(matches: list[tuple[str, str, str]]) -> bool:
 
 
 @cli.command()
-def status():
+@click.pass_context
+def status(ctx):
     """Show code-expert dashboard."""
     config = _load_config()
 
@@ -1493,7 +1501,7 @@ def status():
     click.echo(f"Nogoods:  {nogood_count}")
 
     # Count topics
-    queue = load_queue()
+    queue = load_queue(_get_project_dir(ctx))
     pending = sum(1 for t in queue if t.status == "pending")
     done = sum(1 for t in queue if t.status == "done")
     skipped = sum(1 for t in queue if t.status == "skipped")
