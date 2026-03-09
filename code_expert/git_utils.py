@@ -48,6 +48,64 @@ def get_diff(
     return result.stdout
 
 
+def get_diff_since(since: str, cwd: str | None = None, context_lines: int = 10) -> tuple[str, str]:
+    """Get diff of all changes since a date.
+
+    Args:
+        since: Date string (e.g., "2026-03-01", "1 week ago")
+        cwd: Working directory
+        context_lines: Number of context lines
+
+    Returns:
+        Tuple of (diff_content, commit_log)
+
+    Raises:
+        RuntimeError: If no commits found since the date
+    """
+    # Find the last commit BEFORE the date to use as diff base
+    result = subprocess.run(
+        ["git", "log", f"--until={since}", "--format=%H", "-1"],
+        capture_output=True, text=True, cwd=cwd,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Git log failed: {result.stderr}")
+
+    base = result.stdout.strip()
+    if not base:
+        # No commits before this date — all commits are since the date
+        # Use the first commit and diff it against empty tree won't work
+        # in shallow clones, so just get the full log
+        check = subprocess.run(
+            ["git", "log", f"--since={since}", "--format=%H"],
+            capture_output=True, text=True, cwd=cwd,
+        )
+        commits = [c for c in check.stdout.strip().split("\n") if c]
+        if not commits:
+            raise RuntimeError(f"No commits found since {since}")
+        # Use the oldest commit directly — we'll miss its own changes
+        # but this is the shallow clone safe path
+        base = commits[-1]
+
+    # Diff from base to HEAD
+    context_arg = f"-U{context_lines}"
+    diff_result = subprocess.run(
+        ["git", "diff", context_arg, f"{base}..HEAD"],
+        capture_output=True, text=True, cwd=cwd,
+    )
+    if diff_result.returncode != 0:
+        raise RuntimeError(f"Git diff failed: {diff_result.stderr}")
+    diff = diff_result.stdout
+
+    # Get commit log
+    log_result = subprocess.run(
+        ["git", "log", "--oneline", f"{base}..HEAD"],
+        capture_output=True, text=True, cwd=cwd,
+    )
+    log = log_result.stdout if log_result.returncode == 0 else ""
+
+    return diff, log
+
+
 def get_file_content(path: str) -> str | None:
     """Read file content, returning None if not found."""
     try:

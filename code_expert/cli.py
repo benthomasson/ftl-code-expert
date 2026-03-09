@@ -16,6 +16,7 @@ from .git_utils import (
     find_related_tests,
     get_commit_log,
     get_diff,
+    get_diff_since,
     get_file_content,
     get_imports,
     get_repo_structure,
@@ -496,8 +497,9 @@ def explain_repo(ctx, repo_path):
 @explain.command("diff")
 @click.option("--branch", "-b", default=None, help="Branch to explain")
 @click.option("--base", default="main", help="Base branch (default: main)")
+@click.option("--since", default=None, help="Show changes since date (e.g., 2026-03-01, '1 week ago')")
 @click.pass_context
-def explain_diff(ctx, branch, base):
+def explain_diff(ctx, branch, base, since):
     """Explain what changed in a diff and why."""
     model = ctx.obj["model"]
     repo_path = _get_repo(ctx)
@@ -509,10 +511,14 @@ def explain_diff(ctx, branch, base):
     abs_repo = os.path.abspath(repo_path)
 
     try:
-        if branch:
+        if since:
+            diff_content, commit_log = get_diff_since(since, cwd=abs_repo)
+        elif branch:
             diff_content = get_diff(branch, base, cwd=abs_repo)
+            commit_log = get_commit_log(branch, base, cwd=abs_repo)
         else:
             diff_content = get_diff(cwd=abs_repo)
+            commit_log = None
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -521,10 +527,6 @@ def explain_diff(ctx, branch, base):
         click.echo("No changes to explain.", err=True)
         sys.exit(0)
 
-    commit_log = None
-    if branch:
-        commit_log = get_commit_log(branch, base, cwd=abs_repo)
-
     changed_files = []
     for line in diff_content.split("\n"):
         if line.startswith("+++ b/"):
@@ -532,7 +534,7 @@ def explain_diff(ctx, branch, base):
             if path != "/dev/null":
                 changed_files.append(path)
 
-    diff_label = branch or "staged"
+    diff_label = f"since {since}" if since else (branch or "staged")
     click.echo(f"Explaining {diff_label} changes ({len(changed_files)} files)...", err=True)
 
     prompt = build_diff_prompt(
