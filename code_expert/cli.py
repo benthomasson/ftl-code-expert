@@ -678,6 +678,7 @@ def _run_file_topic(ctx, topic, model, repo_path):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
+    click.echo(f"Reading {file_path}...", err=True)
     content = get_file_content(abs_path)
     if content is None:
         click.echo(f"Cannot read file: {file_path}", err=True)
@@ -695,7 +696,7 @@ def _run_file_topic(ctx, topic, model, repo_path):
         repo_context=repo_tree,
     )
 
-    click.echo(f"Running {model}...", err=True)
+    click.echo(f"Explaining {rel_path} with {model}...", err=True)
     try:
         result = asyncio.run(invoke(prompt, model))
     except Exception as e:
@@ -727,6 +728,7 @@ def _run_function_topic(ctx, topic, model, repo_path):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
+    click.echo(f"Reading {file_path}:{symbol_name}...", err=True)
     symbol_source = extract_symbol(abs_path, symbol_name)
     if symbol_source is None:
         click.echo(f"Symbol '{symbol_name}' not found in {file_path} (skipping)", err=True)
@@ -744,7 +746,7 @@ def _run_function_topic(ctx, topic, model, repo_path):
         related_tests=related_tests or None,
     )
 
-    click.echo(f"Running {model}...", err=True)
+    click.echo(f"Explaining {rel_path}:{symbol_name} with {model}...", err=True)
     try:
         result = asyncio.run(invoke(prompt, model))
     except Exception as e:
@@ -769,6 +771,7 @@ def _run_repo_topic(ctx, topic, model, repo_path):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
+    click.echo(f"Scanning repo structure...", err=True)
     tree = get_repo_structure(target_path)
     _, config_content = _find_project_config(target_path)
     readme_content = get_file_content(os.path.join(target_path, "README.md"))
@@ -781,7 +784,7 @@ def _run_repo_topic(ctx, topic, model, repo_path):
         entry_points=entry_points or None,
     )
 
-    click.echo(f"Running {model}...", err=True)
+    click.echo(f"Explaining repo with {model}...", err=True)
     try:
         result = asyncio.run(invoke(prompt, model))
     except Exception as e:
@@ -826,7 +829,7 @@ def _run_diff_topic(ctx, topic, model, repo_path):
         changed_files_summary=changed_files or None,
     )
 
-    click.echo(f"Running {model}...", err=True)
+    click.echo(f"Explaining diff {topic.target} ({len(changed_files)} files) with {model}...", err=True)
     try:
         result = asyncio.run(invoke(prompt, model))
     except Exception as e:
