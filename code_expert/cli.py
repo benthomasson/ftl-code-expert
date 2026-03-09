@@ -30,6 +30,7 @@ from .observations import parse_observation_requests, run_observations
 from .prompts import (
     PROPOSE_BELIEFS_CODE,
     build_diff_prompt,
+    build_diff_summary_prompt,
     build_file_prompt,
     build_function_prompt,
     build_observe_prompt,
@@ -558,11 +559,23 @@ def explain_diff(ctx, branch, base, since, since_last):
         diff_label = branch or "staged"
     click.echo(f"Explaining {diff_label} changes ({len(changed_files)} files)...", err=True)
 
-    prompt = build_diff_prompt(
-        diff_content=diff_content,
-        commit_log=commit_log,
-        changed_files_summary=changed_files or None,
-    )
+    max_diff_chars = 100_000
+    if len(diff_content) > max_diff_chars:
+        click.echo(
+            f"Diff too large ({len(diff_content):,} chars). Using summary mode — "
+            f"run 'explore' afterward to examine individual files.",
+            err=True,
+        )
+        prompt = build_diff_summary_prompt(
+            commit_log=commit_log,
+            changed_files=changed_files or None,
+        )
+    else:
+        prompt = build_diff_prompt(
+            diff_content=diff_content,
+            commit_log=commit_log,
+            changed_files_summary=changed_files or None,
+        )
 
     click.echo(f"Running {model}...", err=True)
     try:

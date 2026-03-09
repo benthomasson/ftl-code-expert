@@ -1,7 +1,7 @@
 """Prompt templates for code expert."""
 
 from .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS
-from .diff import build_diff_prompt
+from .diff import build_diff_prompt, build_diff_summary_prompt
 from .file import build_file_prompt
 from .function import build_function_prompt
 from .observe import build_observe_prompt
@@ -14,6 +14,7 @@ __all__ = [
     "PROPOSE_BELIEFS_CODE",
     "TOPICS_INSTRUCTIONS",
     "build_diff_prompt",
+    "build_diff_summary_prompt",
     "build_file_prompt",
     "build_function_prompt",
     "build_observe_prompt",
