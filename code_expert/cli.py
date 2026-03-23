@@ -1843,17 +1843,30 @@ def generate_spec(ctx, component, keywords, output, source_files, model, dry_run
     # Gather source files
     src_files = _gather_source_files(repo_path, beliefs)
 
-    # Add explicit source files
+    # Add explicit source files (expand directories to .py files)
     for sf in source_files:
         abs_path = os.path.join(repo_path, sf) if not os.path.isabs(sf) else sf
-        content = get_file_content(abs_path)
-        if content is not None:
-            if len(content) > 20000:
-                content = content[:20000] + "\n# [Truncated at 20000 chars]"
-            rel = os.path.relpath(abs_path, repo_path)
-            src_files[rel] = content
+        if os.path.isdir(abs_path):
+            for root, _, files in os.walk(abs_path):
+                for fname in sorted(files):
+                    if not fname.endswith(".py"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    content = get_file_content(fpath)
+                    if content is not None:
+                        if len(content) > 20000:
+                            content = content[:20000] + "\n# [Truncated at 20000 chars]"
+                        rel = os.path.relpath(fpath, repo_path)
+                        src_files[rel] = content
         else:
-            click.echo(f"WARN: Cannot read {sf}", err=True)
+            content = get_file_content(abs_path)
+            if content is not None:
+                if len(content) > 20000:
+                    content = content[:20000] + "\n# [Truncated at 20000 chars]"
+                rel = os.path.relpath(abs_path, repo_path)
+                src_files[rel] = content
+            else:
+                click.echo(f"WARN: Cannot read {sf}", err=True)
 
     click.echo(f"Found {len(src_files)} source files", err=True)
 
