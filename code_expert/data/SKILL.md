@@ -42,8 +42,8 @@ code-expert status                         # dashboard
 - `explore [--skip] [--pick N]` — Work through topic queue
 - `topics [--all]` — Show exploration queue
 - `propose-beliefs` — Extract beliefs from entries
-- `accept-beliefs` — Import accepted beliefs
-- `status` — Dashboard
+- `accept-beliefs` — Import accepted beliefs (uses `reasons` if installed, falls back to `beliefs`)
+- `status` — Dashboard (shows reasons.db stats if available)
 
 ## Natural Language
 
@@ -53,3 +53,7 @@ If the user says:
 - "explain this file" → `code-expert explain file <path>`
 - "extract what we've learned" → `code-expert propose-beliefs`
 - "how far along are we" → `code-expert status`
+
+## Belief Storage
+
+When `ftl-reasons` is installed (`reasons` CLI on PATH), `accept-beliefs` writes directly to `reasons.db` and re-exports `beliefs.md` and `network.json`. When only `ftl-beliefs` is installed, it writes to `beliefs.md` directly. The `init` command sets up whichever store is available.

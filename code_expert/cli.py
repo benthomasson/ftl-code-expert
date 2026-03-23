@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -131,6 +132,11 @@ def _enqueue_topics(response: str, source: str, project_dir: str | None = None) 
             click.echo(f"Queued {added} new topic(s) ({total} pending)", err=True)
 
 
+def _has_reasons() -> bool:
+    """Check if ftl-reasons CLI is available."""
+    return shutil.which("reasons") is not None
+
+
 def _parse_beliefs_from_response(response: str) -> list[dict]:
     """Parse belief suggestions from model response."""
     section_match = re.search(
@@ -236,12 +242,16 @@ def init(repo_path, domain):
     if not domain:
         domain = repo_name
 
-    # Check prerequisites
-    for tool in ["git", "beliefs", "entry"]:
-        if not __import__("shutil").which(tool):
+    # Check prerequisites — reasons OR beliefs required, not both
+    for tool in ["git", "entry"]:
+        if not shutil.which(tool):
             click.echo(f"Error: {tool} not found on PATH", err=True)
             click.echo(f"Install with: uv tool install {tool}", err=True)
             sys.exit(1)
+    if not shutil.which("reasons") and not shutil.which("beliefs"):
+        click.echo("Error: neither reasons nor beliefs found on PATH", err=True)
+        click.echo("Install with: uv tool install ftl-reasons", err=True)
+        sys.exit(1)
 
     # Create project dir
     project_dir = Path.cwd() / PROJECT_DIR
@@ -257,8 +267,19 @@ def init(repo_path, domain):
     # Create entries dir
     Path("entries").mkdir(exist_ok=True)
 
-    # Init beliefs if needed
-    if not Path("beliefs.md").exists():
+    # Init reasons as primary store if available, otherwise beliefs
+    if _has_reasons():
+        if not Path("reasons.db").exists():
+            subprocess.run(["reasons", "init"], capture_output=True)
+            subprocess.run(
+                ["reasons", "add-repo", repo_name, abs_repo],
+                capture_output=True,
+            )
+            click.echo("Initialized reasons.db")
+        # Generate beliefs.md from reasons
+        if not Path("beliefs.md").exists():
+            _reasons_export()
+    elif not Path("beliefs.md").exists():
         subprocess.run(["beliefs", "init"], capture_output=True)
         click.echo("Initialized beliefs.md")
 
@@ -1213,11 +1234,43 @@ def accept_beliefs(proposals_file):
 
     click.echo(f"Found {len(matches)} accepted beliefs")
 
-    # Try batch mode first (single subprocess, single parse of beliefs.md)
+    # Prefer reasons as primary store, fall back to beliefs
+    if _has_reasons():
+        click.echo("Using reasons as primary store...")
+        added = 0
+        failed = 0
+        skipped = 0
+        for belief_id, claim_text, source in matches:
+            result = subprocess.run(
+                ["reasons", "add", belief_id, claim_text.strip(),
+                 "--source", source.strip()],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                click.echo(f"  Added: {belief_id}")
+                added += 1
+            else:
+                stderr = result.stderr.strip()
+                stdout = result.stdout.strip()
+                if "already exists" in stderr or "already exists" in stdout:
+                    click.echo(f"  EXISTS: {belief_id}")
+                    skipped += 1
+                else:
+                    click.echo(f"  FAIL: {belief_id}: {stderr or stdout}")
+                    failed += 1
+
+        click.echo(f"\nAccepted {added} beliefs ({skipped} existing, {failed} failed)")
+
+        # Re-export beliefs.md and network.json
+        if added > 0:
+            _reasons_export()
+        return
+
+    # Try beliefs batch mode (single subprocess, single parse of beliefs.md)
     if _accept_batch(matches):
         return
 
-    # Fall back to per-belief add
+    # Fall back to per-belief add via beliefs CLI
     click.echo("Falling back to per-belief add...")
     added = 0
     failed = 0
@@ -1248,6 +1301,25 @@ def accept_beliefs(proposals_file):
 
 
 def _load_existing_beliefs(beliefs_path: Path) -> list[dict]:
+    """Load existing beliefs. Prefers reasons.db if available, falls back to beliefs.md."""
+    # Try reasons first for authoritative IDs (beliefs.md may be stale)
+    if _has_reasons() and Path("reasons.db").exists():
+        reasons_beliefs = _load_existing_from_reasons()
+        if reasons_beliefs:
+            # Enrich with text/source from beliefs.md if available
+            md_beliefs = {}
+            if beliefs_path.exists():
+                for b in _parse_beliefs_md(beliefs_path):
+                    md_beliefs[b["id"]] = b
+            for b in reasons_beliefs:
+                if b["id"] in md_beliefs:
+                    b["text"] = md_beliefs[b["id"]]["text"]
+                    b["source"] = md_beliefs[b["id"]]["source"]
+            return reasons_beliefs
+    return _parse_beliefs_md(beliefs_path)
+
+
+def _parse_beliefs_md(beliefs_path: Path) -> list[dict]:
     """Parse beliefs.md into list of {id, text, source} dicts."""
     if not beliefs_path.exists():
         return []
@@ -1503,6 +1575,45 @@ def _accept_batch(matches: list[tuple[str, str, str]]) -> bool:
     return True
 
 
+def _reasons_export():
+    """Re-export beliefs.md and network.json from reasons after adding beliefs."""
+    beliefs_path = Path("beliefs.md")
+    network_path = Path("network.json")
+
+    result = subprocess.run(
+        ["reasons", "export-markdown"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        beliefs_path.write_text(result.stdout)
+        click.echo(f"Updated {beliefs_path}")
+
+    result = subprocess.run(
+        ["reasons", "export"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        network_path.write_text(result.stdout)
+        click.echo(f"Updated {network_path}")
+
+
+def _load_existing_from_reasons() -> list[dict]:
+    """Load existing beliefs from reasons.db via CLI."""
+    result = subprocess.run(
+        ["reasons", "list"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    beliefs = []
+    for line in result.stdout.splitlines():
+        # Format: "  [+] node-id  (premise)" or "  [-] node-id  (premise)"
+        m = re.match(r'\s*\[[+-]\]\s+([\w-]+)', line)
+        if m:
+            beliefs.append({"id": m.group(1), "text": "", "source": ""})
+    return beliefs
+
+
 # --- status ---
 
 
@@ -1529,18 +1640,30 @@ def status(ctx):
     entry_count = len(list(entries_dir.rglob("*.md"))) if entries_dir.exists() else 0
     click.echo(f"Entries:  {entry_count}")
 
-    # Count beliefs
-    beliefs_path = Path("beliefs.md")
-    beliefs_in = 0
-    beliefs_stale = 0
-    if beliefs_path.exists():
-        text = beliefs_path.read_text()
-        beliefs_in = len(re.findall(r"^### \S+ \[IN\]", text, re.MULTILINE))
-        beliefs_stale = len(re.findall(r"^### \S+ \[STALE\]", text, re.MULTILINE))
-    status_parts = [f"{beliefs_in} IN"]
-    if beliefs_stale:
-        status_parts.append(f"{beliefs_stale} STALE")
-    click.echo(f"Beliefs:  {', '.join(status_parts)}")
+    # Count beliefs — prefer reasons if available
+    if _has_reasons() and Path("reasons.db").exists():
+        result = subprocess.run(
+            ["reasons", "list"], capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            lines = result.stdout.splitlines()
+            r_in = sum(1 for l in lines if l.strip().startswith("[+]"))
+            r_out = sum(1 for l in lines if l.strip().startswith("[-]"))
+            click.echo(f"Beliefs:  {r_in} IN, {r_out} OUT (reasons.db)")
+        else:
+            click.echo("Beliefs:  reasons.db error")
+    else:
+        beliefs_path = Path("beliefs.md")
+        beliefs_in = 0
+        beliefs_stale = 0
+        if beliefs_path.exists():
+            text = beliefs_path.read_text()
+            beliefs_in = len(re.findall(r"^### \S+ \[IN\]", text, re.MULTILINE))
+            beliefs_stale = len(re.findall(r"^### \S+ \[STALE\]", text, re.MULTILINE))
+        status_parts = [f"{beliefs_in} IN"]
+        if beliefs_stale:
+            status_parts.append(f"{beliefs_stale} STALE")
+        click.echo(f"Beliefs:  {', '.join(status_parts)}")
 
     # Count nogoods
     nogoods_path = Path("nogoods.md")

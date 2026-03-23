@@ -11,7 +11,9 @@ This is a code expert knowledge base for **{{DOMAIN}}**.
 | File | Purpose |
 |------|---------|
 | `entries/` | Chronological code exploration entries |
-| `beliefs.md` | Belief registry (architectural claims with source tracking) |
+| `beliefs.md` | Belief registry (read-only view, generated from reasons) |
+| `reasons.db` | Primary belief store (SQLite, gitignored) |
+| `network.json` | Portable export of reasons network (committed) |
 | `nogoods.md` | Tracked contradictions between beliefs |
 | `.code-expert/` | Tool state (topic queue, config) |
 
@@ -22,7 +24,7 @@ This is a code expert knowledge base for **{{DOMAIN}}**.
 3. Explain specific files/functions as needed (`code-expert explain file ...`)
 4. Propose beliefs from accumulated entries (`code-expert propose-beliefs`)
 5. Review and accept beliefs (`code-expert accept-beliefs`)
-6. Check for stale beliefs periodically (`beliefs check-stale`)
+6. Check for stale beliefs periodically (`reasons check-stale`)
 
 ## Tools
 
@@ -38,8 +40,8 @@ code-expert topics
 # Belief pipeline
 code-expert propose-beliefs
 code-expert accept-beliefs
-beliefs check-stale
-beliefs compact --budget 200
+reasons check-stale
+reasons compact
 
 # Status
 code-expert status
