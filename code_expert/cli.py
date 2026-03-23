@@ -1702,6 +1702,209 @@ def status(ctx):
         click.echo(f"Proposed: {total} candidates ({accepted} accepted)")
 
 
+# --- generate-spec ---
+
+
+def _gather_beliefs_for_spec(keywords: list[str]) -> list[dict]:
+    """Gather IN beliefs matching any keyword from beliefs.md."""
+    beliefs_path = Path("beliefs.md")
+    if not beliefs_path.exists():
+        return []
+
+    text = beliefs_path.read_text()
+    sections = re.split(r'^(?=### )', text, flags=re.MULTILINE)
+    matched = []
+
+    for section in sections:
+        m = re.match(r'^### ([\w-]+) \[(IN|OUT)\]\s*(\w+)?', section)
+        if not m:
+            continue
+        belief_id = m.group(1)
+        status = m.group(2)
+        belief_type = m.group(3) or "OBSERVATION"
+        if status != "IN":
+            continue
+
+        lines = section.strip().splitlines()
+        claim_text = lines[1].strip() if len(lines) > 1 else ""
+        source = ""
+        depends = ""
+        for line in lines:
+            if line.startswith("- Source:"):
+                source = line.replace("- Source:", "").strip()
+            if line.startswith("- Depends on:"):
+                depends = line.replace("- Depends on:", "").strip()
+
+        # Match against keywords (check ID, claim text, source)
+        searchable = f"{belief_id} {claim_text} {source}".lower()
+        if any(kw.lower() in searchable for kw in keywords):
+            matched.append({
+                "id": belief_id,
+                "status": status,
+                "type": belief_type,
+                "text": claim_text,
+                "source": source,
+                "depends": depends,
+            })
+
+    return matched
+
+
+def _gather_source_files(repo_path: str, beliefs: list[dict]) -> dict[str, str]:
+    """Read source files referenced by beliefs."""
+    # Collect unique file paths from belief sources and IDs
+    file_paths = set()
+    for belief in beliefs:
+        # Extract paths from source entries
+        source = belief.get("source", "")
+        # Source format: entries/2026/03/11/src-redhat_agents-workflow-synthesizer.md
+        # Extract the implied source file: src/redhat_agents/workflow/synthesizer.py
+        m = re.search(r'src[-/](.+?)\.md', source)
+        if m:
+            # Convert dashes back to path separators
+            path = "src/" + m.group(1).replace("-", "/") + ".py"
+            file_paths.add(path)
+
+    # Also look for common patterns in belief IDs
+    source_files = {}
+    for path in sorted(file_paths):
+        abs_path = os.path.join(repo_path, path)
+        content = get_file_content(abs_path)
+        if content is not None:
+            # Truncate very large files
+            if len(content) > 20000:
+                content = content[:20000] + "\n# [Truncated at 20000 chars]"
+            source_files[path] = content
+
+    return source_files
+
+
+def _format_beliefs_for_prompt(beliefs: list[dict]) -> str:
+    """Format beliefs into prompt-friendly text."""
+    lines = []
+    for b in beliefs:
+        lines.append(f"### {b['id']} [{b['status']}] {b['type']}")
+        lines.append(b['text'])
+        if b.get('depends'):
+            lines.append(f"- Depends on: {b['depends']}")
+        if b.get('source'):
+            lines.append(f"- Source: {b['source']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _format_source_code(source_files: dict[str, str]) -> str:
+    """Format source files into prompt-friendly text."""
+    if not source_files:
+        return "(No source files found)"
+    parts = []
+    for path, content in source_files.items():
+        parts.append(f"### {path}\n\n```python\n{content}\n```")
+    return "\n\n".join(parts)
+
+
+@cli.command("generate-spec")
+@click.argument("component")
+@click.option("--keywords", "-k", required=True,
+              help="Comma-separated keywords to match beliefs (e.g., 'synth,citation,tree-synth')")
+@click.option("--output", "-o", default=None,
+              help="Output file (default: docs/specs/<component>.spec.md)")
+@click.option("--source-files", "-s", multiple=True,
+              help="Additional source files to include (relative to repo)")
+@click.option("--model", "-m", default=None, help="Override model")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show gathered beliefs and files without generating")
+@click.pass_context
+def generate_spec(ctx, component, keywords, output, source_files, model, dry_run):
+    """Generate a spec from beliefs matching keywords.
+
+    Example:
+        code-expert generate-spec Synthesizer -k "synth,citation,tree-synth,pre-merge"
+    """
+    from .caffeinate import hold as _caffeinate
+    from .prompts.spec import GENERATE_SPEC_PROMPT
+    _caffeinate()
+
+    if model is None:
+        model = ctx.obj["model"]
+    repo_path = _get_repo(ctx)
+
+    # Parse keywords
+    kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    click.echo(f"Gathering beliefs matching: {', '.join(kw_list)}", err=True)
+
+    # Gather beliefs
+    beliefs = _gather_beliefs_for_spec(kw_list)
+    if not beliefs:
+        click.echo("No matching beliefs found.", err=True)
+        sys.exit(1)
+    click.echo(f"Found {len(beliefs)} matching beliefs", err=True)
+
+    # Gather source files
+    src_files = _gather_source_files(repo_path, beliefs)
+
+    # Add explicit source files
+    for sf in source_files:
+        abs_path = os.path.join(repo_path, sf) if not os.path.isabs(sf) else sf
+        content = get_file_content(abs_path)
+        if content is not None:
+            if len(content) > 20000:
+                content = content[:20000] + "\n# [Truncated at 20000 chars]"
+            rel = os.path.relpath(abs_path, repo_path)
+            src_files[rel] = content
+        else:
+            click.echo(f"WARN: Cannot read {sf}", err=True)
+
+    click.echo(f"Found {len(src_files)} source files", err=True)
+
+    if dry_run:
+        click.echo(f"\n=== Beliefs ({len(beliefs)}) ===\n")
+        for b in beliefs:
+            click.echo(f"  {b['id']}: {b['text'][:80]}")
+        click.echo(f"\n=== Source Files ({len(src_files)}) ===\n")
+        for path in sorted(src_files):
+            click.echo(f"  {path} ({len(src_files[path])} chars)")
+        return
+
+    if not check_model_available(model):
+        click.echo(f"Error: Model '{model}' CLI not available", err=True)
+        sys.exit(1)
+
+    # Build prompt
+    beliefs_text = _format_beliefs_for_prompt(beliefs)
+    source_code = _format_source_code(src_files)
+    file_list = ", ".join(sorted(src_files.keys())) if src_files else "(none)"
+
+    config = _load_config()
+    domain = config.get("domain", "code-expert") if config else "code-expert"
+
+    prompt = GENERATE_SPEC_PROMPT.format(
+        component=component,
+        source_files=file_list,
+        belief_count=len(beliefs),
+        beliefs_text=beliefs_text,
+        source_code=source_code,
+        domain=domain,
+    )
+
+    click.echo(f"Generating spec with {model}...", err=True)
+    try:
+        result = asyncio.run(invoke(prompt, model))
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # Write output
+    if output is None:
+        output = f"docs/specs/{component.lower()}.spec.md"
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(result + "\n")
+
+    click.echo(f"\nWrote {output_path} ({len(beliefs)} beliefs, {len(src_files)} source files)")
+    click.echo(f"To update: re-run this command after adding new beliefs.")
+
+
 # --- install-skill ---
 
 

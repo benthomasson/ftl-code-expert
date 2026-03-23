@@ -8,9 +8,11 @@ from .observe import build_observe_prompt
 from .propose import PROPOSE_BELIEFS_CODE
 from .repo import build_repo_prompt
 from .scan import build_scan_prompt
+from .spec import GENERATE_SPEC_PROMPT
 
 __all__ = [
     "BELIEFS_INSTRUCTIONS",
+    "GENERATE_SPEC_PROMPT",
     "PROPOSE_BELIEFS_CODE",
     "TOPICS_INSTRUCTIONS",
     "build_diff_prompt",
