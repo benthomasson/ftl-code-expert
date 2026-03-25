@@ -2370,6 +2370,10 @@ def file_issues(ctx, repo_slug, platform_override, labels, dry_run):
     # blocker_id -> list of gated node dicts
     blockers: dict[str, list[dict]] = {}
     for nid, node in nodes.items():
+        if node.get("truth_value") != "OUT":
+            continue  # Only OUT nodes are actually gated
+        if node.get("metadata", {}).get("superseded_by"):
+            continue  # Superseded beliefs are OUT by design, not bugs
         for j in node.get("justifications", []):
             if not j.get("outlist"):
                 continue
@@ -2378,7 +2382,7 @@ def file_issues(ctx, repo_slug, platform_override, labels, dry_run):
                     continue
                 if nodes[outlist_id].get("truth_value") != "IN":
                     continue
-                # This outlist node is IN, so it's actively blocking
+                # This outlist node is IN, blocking an OUT derived belief
                 blockers.setdefault(outlist_id, []).append({
                     "id": nid,
                     "text": node.get("text", ""),
