@@ -22,7 +22,7 @@ Try these in order until one works:
 code-expert init ~/git/some-project --domain "Web framework"
 code-expert scan                           # identify key files, populate topic queue
 code-expert explore                        # explain next topic, create entry
-code-expert explore                        # keep going
+code-expert explore --pick 1,3,8           # explore multiple by index (stable indices)
 code-expert explore --skip                 # skip one
 code-expert topics                         # see exploration queue
 code-expert propose-beliefs                # extract beliefs from entries
@@ -39,7 +39,7 @@ code-expert status                         # dashboard
 - `explain function <file:symbol>` — Explain a function/class, create entry
 - `explain repo [path]` — Repo architecture overview entry
 - `explain diff [--branch B]` — Explain changes, create entry
-- `explore [--skip] [--pick N]` — Work through topic queue
+- `explore [--skip] [--pick N[,N,...]]` — Work through topic queue (multi-pick resolves indices before consuming)
 - `topics [--all]` — Show exploration queue
 - `propose-beliefs` — Extract beliefs from entries
 - `accept-beliefs` — Import accepted beliefs (uses `reasons` if installed, falls back to `beliefs`)
