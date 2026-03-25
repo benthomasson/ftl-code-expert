@@ -44,6 +44,7 @@ from .topics import (
     parse_topics_from_response,
     pending_count,
     pop_at,
+    pop_multiple,
     pop_next,
     skip_topic,
 )
@@ -667,11 +668,11 @@ def topics(ctx, show_all):
 @cli.command()
 @click.option("--skip", "do_skip", is_flag=True, default=False,
               help="Skip the next topic")
-@click.option("--pick", "pick_index", type=int, default=None,
-              help="Pick a topic by index")
+@click.option("--pick", "pick_index", type=str, default=None,
+              help="Pick topic(s) by index — single (3) or comma-separated (1,3,8)")
 @click.pass_context
 def explore(ctx, do_skip, pick_index):
-    """Explore the next topic in the queue (or --skip / --pick N)."""
+    """Explore the next topic in the queue (or --skip / --pick N[,N,...])."""
     from .caffeinate import hold as _caffeinate
     _caffeinate()
     project_dir = _get_project_dir(ctx)
@@ -688,37 +689,62 @@ def explore(ctx, do_skip, pick_index):
         return
 
     if pick_index is not None:
-        topic = pop_at(pick_index, project_dir)
-    else:
-        topic = pop_next(project_dir)
+        # Parse comma-separated indices
+        try:
+            indices = [int(x.strip()) for x in pick_index.split(",")]
+        except ValueError:
+            click.echo(f"Error: --pick must be integers, got: {pick_index}", err=True)
+            sys.exit(1)
 
-    if topic is None:
+        if len(indices) > 1:
+            topics = pop_multiple(indices, project_dir)
+        else:
+            topics = [pop_at(indices[0], project_dir)]
+    else:
+        topics = [pop_next(project_dir)]
+
+    # Filter out None (invalid indices)
+    valid_topics = [(i, t) for i, t in zip(
+        indices if pick_index is not None else [0],
+        topics,
+    ) if t is not None]
+
+    if not valid_topics:
         click.echo("No pending topics. Run `code-expert scan` to discover topics.")
         return
 
-    click.echo(f"Topic: [{topic.kind}] {topic.target}", err=True)
-    click.echo(f"  {topic.title}", err=True)
-    if topic.source:
-        click.echo(f"  (from {topic.source})", err=True)
-    click.echo(err=True)
+    invalid_count = len(topics) - len(valid_topics)
+    if invalid_count:
+        click.echo(f"Warning: {invalid_count} index(es) out of bounds, skipped.", err=True)
 
     repo_path = _get_repo(ctx)
     abs_repo = os.path.abspath(repo_path)
     model = ctx.obj["model"]
 
-    if topic.kind == "file":
-        _run_file_topic(ctx, topic, model, abs_repo)
-    elif topic.kind == "function":
-        _run_function_topic(ctx, topic, model, abs_repo)
-    elif topic.kind == "repo":
-        _run_repo_topic(ctx, topic, model, abs_repo)
-    elif topic.kind == "diff":
-        _run_diff_topic(ctx, topic, model, abs_repo)
-    elif topic.kind == "general":
-        _run_general_topic(ctx, topic, model, abs_repo)
-    else:
-        click.echo(f"Unknown topic kind: {topic.kind}", err=True)
-        sys.exit(1)
+    for seq, (idx, topic) in enumerate(valid_topics):
+        if len(valid_topics) > 1:
+            click.echo(f"\n{'=' * 40}", err=True)
+            click.echo(f"[{seq + 1}/{len(valid_topics)}] Topic #{idx}", err=True)
+            click.echo(f"{'=' * 40}", err=True)
+
+        click.echo(f"Topic: [{topic.kind}] {topic.target}", err=True)
+        click.echo(f"  {topic.title}", err=True)
+        if topic.source:
+            click.echo(f"  (from {topic.source})", err=True)
+        click.echo(err=True)
+
+        if topic.kind == "file":
+            _run_file_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "function":
+            _run_function_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "repo":
+            _run_repo_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "diff":
+            _run_diff_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "general":
+            _run_general_topic(ctx, topic, model, abs_repo)
+        else:
+            click.echo(f"Unknown topic kind: {topic.kind}", err=True)
 
     remaining = pending_count(project_dir)
     if remaining:

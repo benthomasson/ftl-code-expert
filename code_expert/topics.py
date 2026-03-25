@@ -111,6 +111,35 @@ def pop_at(index: int, project_dir: str | None = None) -> Topic | None:
     return queue[pending[index]]
 
 
+def pop_multiple(indices: list[int], project_dir: str | None = None) -> list[Topic | None]:
+    """Get multiple pending topics by index and mark them all as done.
+
+    Resolves all indices against the current pending list before marking
+    any as done, so indices don't shift during batch selection.
+
+    Returns a list of Topics (None for out-of-bounds indices).
+    """
+    queue = load_queue(project_dir)
+    pending = [i for i, t in enumerate(queue) if t.status == "pending"]
+
+    results = []
+    valid_queue_indices = []
+    for idx in indices:
+        if idx < 0 or idx >= len(pending):
+            results.append(None)
+        else:
+            qi = pending[idx]
+            results.append(queue[qi])
+            valid_queue_indices.append(qi)
+
+    if valid_queue_indices:
+        for qi in valid_queue_indices:
+            queue[qi].status = "done"
+        save_queue(queue, project_dir)
+
+    return results
+
+
 def skip_topic(index: int, project_dir: str | None = None) -> bool:
     """Mark a topic as skipped by its index in the queue."""
     queue = load_queue(project_dir)
