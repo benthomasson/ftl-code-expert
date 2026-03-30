@@ -677,12 +677,22 @@ def topics(ctx, show_all):
               help="Skip the next topic")
 @click.option("--pick", "pick_index", type=str, default=None,
               help="Pick topic(s) by index — single (3) or comma-separated (1,3,8)")
+@click.option("--loop", "loop_max", type=int, default=None,
+              help="Continuously explore up to N topics [default: 10]")
 @click.pass_context
-def explore(ctx, do_skip, pick_index):
+def explore(ctx, do_skip, pick_index, loop_max):
     """Explore the next topic in the queue (or --skip / --pick N[,N,...])."""
     from .caffeinate import hold as _caffeinate
     _caffeinate()
     project_dir = _get_project_dir(ctx)
+
+    if loop_max is not None:
+        if do_skip or pick_index:
+            click.echo("Error: --loop cannot be combined with --skip or --pick", err=True)
+            sys.exit(1)
+        _explore_loop(ctx, project_dir, loop_max)
+        return
+
     if do_skip:
         if skip_topic(0, project_dir):
             queue = load_queue(project_dir)
@@ -759,6 +769,51 @@ def explore(ctx, do_skip, pick_index):
         click.echo(f"\n{remaining} topic(s) remaining. Run `code-expert explore` to continue.", err=True)
     else:
         click.echo("\nNo more topics. Exploration complete.", err=True)
+
+
+def _explore_loop(ctx, project_dir, max_topics):
+    """Continuously explore topics up to max_topics."""
+    repo_path = _get_repo(ctx)
+    abs_repo = os.path.abspath(repo_path)
+    model = ctx.obj["model"]
+    timeout = ctx.obj["timeout"]
+
+    explored = 0
+    while explored < max_topics:
+        topic = pop_next(project_dir)
+        if topic is None:
+            if explored == 0:
+                click.echo("No pending topics. Run `code-expert scan` to discover topics.")
+            else:
+                click.echo(f"\nNo more topics after {explored} exploration(s).", err=True)
+            return
+
+        explored += 1
+        remaining = pending_count(project_dir)
+        click.echo(f"\n{'=' * 40}", err=True)
+        click.echo(f"[{explored}/{max_topics}] ({remaining} remaining in queue)", err=True)
+        click.echo(f"{'=' * 40}", err=True)
+        click.echo(f"Topic: [{topic.kind}] {topic.target}", err=True)
+        click.echo(f"  {topic.title}", err=True)
+        if topic.source:
+            click.echo(f"  (from {topic.source})", err=True)
+        click.echo(err=True)
+
+        if topic.kind == "file":
+            _run_file_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "function":
+            _run_function_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "repo":
+            _run_repo_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "diff":
+            _run_diff_topic(ctx, topic, model, abs_repo)
+        elif topic.kind == "general":
+            _run_general_topic(ctx, topic, model, abs_repo)
+        else:
+            click.echo(f"Unknown topic kind: {topic.kind}", err=True)
+
+    remaining = pending_count(project_dir)
+    click.echo(f"\nExplored {explored} topic(s). {remaining} remaining in queue.", err=True)
 
 
 def _run_file_topic(ctx, topic, model, repo_path):

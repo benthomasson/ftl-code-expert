@@ -39,7 +39,7 @@ code-expert status                         # dashboard
 - `explain function <file:symbol>` — Explain a function/class, create entry
 - `explain repo [path]` — Repo architecture overview entry
 - `explain diff [--branch B]` — Explain changes, create entry
-- `explore [--skip] [--pick N[,N,...]]` — Work through topic queue (multi-pick resolves indices before consuming)
+- `explore [--skip] [--pick N[,N,...]] [--loop N]` — Work through topic queue (--loop N explores up to N topics continuously)
 - `topics [--all]` — Show exploration queue
 - `propose-beliefs` — Extract beliefs from entries
 - `accept-beliefs` — Import accepted beliefs (uses `reasons` if installed, falls back to `beliefs`)

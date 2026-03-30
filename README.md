@@ -143,6 +143,8 @@ code-expert explore              # next pending topic
 code-expert explore --pick 2     # pick topic #2
 code-expert explore --pick 1,3,8 # pick multiple (indices resolved before any are consumed)
 code-expert explore --skip       # skip current topic
+code-expert explore --loop 10    # continuously explore up to 10 topics
+code-expert explore --loop 5     # explore up to 5
 ```
 
 For `general` topics, explore uses a three-phase process: ask the model what it needs to observe, run those observations (grep, read_file, list_directory, find_symbol, find_usages, file_imports), then explain with the gathered context.
