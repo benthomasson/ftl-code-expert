@@ -818,6 +818,7 @@ def _explore_loop(ctx, project_dir, max_topics):
 
 def _run_file_topic(ctx, topic, model, repo_path):
     """Handle a file exploration topic."""
+    timeout = ctx.obj["timeout"]
     file_path = topic.target
     abs_path = os.path.join(repo_path, file_path) if not os.path.isabs(file_path) else file_path
 
@@ -870,6 +871,7 @@ def _run_file_topic(ctx, topic, model, repo_path):
 
 def _run_function_topic(ctx, topic, model, repo_path):
     """Handle a function exploration topic."""
+    timeout = ctx.obj["timeout"]
     if ":" not in topic.target:
         click.echo(f"Function topic must be file:symbol, got: {topic.target}", err=True)
         return
@@ -920,6 +922,7 @@ def _run_function_topic(ctx, topic, model, repo_path):
 
 def _run_repo_topic(ctx, topic, model, repo_path):
     """Handle a repo exploration topic."""
+    timeout = ctx.obj["timeout"]
     target_path = os.path.join(repo_path, topic.target) if topic.target != "." else repo_path
     if not os.path.isdir(target_path):
         target_path = repo_path
@@ -957,6 +960,7 @@ def _run_repo_topic(ctx, topic, model, repo_path):
 
 def _run_diff_topic(ctx, topic, model, repo_path):
     """Handle a diff exploration topic."""
+    timeout = ctx.obj["timeout"]
     if not check_model_available(model):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
@@ -1003,6 +1007,7 @@ def _run_diff_topic(ctx, topic, model, repo_path):
 
 def _run_general_topic(ctx, topic, model, repo_path):
     """Handle a general exploration topic using observe-then-explain."""
+    timeout = ctx.obj["timeout"]
     if not check_model_available(model):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
