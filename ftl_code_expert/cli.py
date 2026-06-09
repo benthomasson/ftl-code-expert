@@ -1334,7 +1334,7 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
     from .topics import Topic
     timeout = ctx.obj["timeout"]
     parallel = ctx.obj["parallel"]
-    topics_with_commits = []
+    all_topics = []
     skipped = 0
     for file_path, commit in file_to_commit.items():
         abs_path = os.path.join(abs_repo, file_path)
@@ -1343,17 +1343,15 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
             skipped += 1
             continue
 
-        topic = Topic(
+        all_topics.append(Topic(
             title=f"{commit['subject']} — {file_path}",
             kind="file",
             target=file_path,
             source=f"walk-commits:{commit['sha'][:8]}",
-        )
-        topics_with_commits.append((topic, commit))
+        ))
 
     # Explore in batches
     explored = 0
-    all_topics = [t for t, _ in topics_with_commits]
     while explored < len(all_topics):
         batch = all_topics[explored:explored + parallel]
         click.echo(f"\n{'=' * 40}", err=True)
