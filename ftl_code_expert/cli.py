@@ -1330,37 +1330,55 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
         sys.exit(1)
 
-    # Explore each unique file
-    explored = 0
-    skipped = 0
+    # Build topics for each unique file
     from .topics import Topic
+    timeout = ctx.obj["timeout"]
+    parallel = ctx.obj["parallel"]
+    all_topics = []
+    skipped = 0
     for file_path, commit in file_to_commit.items():
-        explored += 1
-        click.echo(f"\n{'=' * 40}", err=True)
-        click.echo(
-            f"[{explored}/{total_files}] {file_path} (from {commit['sha'][:8]})",
-            err=True,
-        )
-        click.echo(f"{'=' * 40}", err=True)
-
-        topic = Topic(
-            title=f"{commit['subject']} — {file_path}",
-            kind="file",
-            target=file_path,
-            source=f"walk-commits:{commit['sha'][:8]}",
-        )
-
         abs_path = os.path.join(abs_repo, file_path)
         if not os.path.isfile(abs_path):
             click.echo(f"  File not found (deleted?): {file_path}, skipping", err=True)
             skipped += 1
             continue
 
-        _run_file_topic(ctx, topic, model, abs_repo)
+        all_topics.append(Topic(
+            title=f"{commit['subject']} — {file_path}",
+            kind="file",
+            target=file_path,
+            source=f"walk-commits:{commit['sha'][:8]}",
+        ))
+
+    # Explore in batches
+    explored = 0
+    while explored < len(all_topics):
+        batch = all_topics[explored:explored + parallel]
+        click.echo(f"\n{'=' * 40}", err=True)
+        click.echo(f"[{explored + 1}-{explored + len(batch)}/{len(all_topics)}]", err=True)
+        click.echo(f"{'=' * 40}", err=True)
+        for topic in batch:
+            click.echo(f"  [{topic.kind}] {topic.target}", err=True)
+
+        if parallel > 1 and len(batch) > 1:
+            results = asyncio.run(
+                _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)
+            )
+            for r in results:
+                if isinstance(r, Exception):
+                    click.echo(f"  Error: {r}", err=True)
+                elif r is not None:
+                    _, result, entry_name, entry_title, source = r
+                    _finalize_topic(ctx, entry_name, entry_title, source, result)
+        else:
+            for topic in batch:
+                _run_file_topic(ctx, topic, model, abs_repo)
+
+        explored += len(batch)
 
     # Save checkpoint so --since-last works next time
     save_diff_checkpoint(project_dir, cwd=abs_repo)
-    click.echo(f"\nWalked {len(commits)} commit(s), explored {explored - skipped} file(s) ({skipped} skipped)", err=True)
+    click.echo(f"\nWalked {len(commits)} commit(s), explored {len(all_topics)} file(s) ({skipped} skipped)", err=True)
     click.echo("Diff checkpoint saved.", err=True)
 
 
