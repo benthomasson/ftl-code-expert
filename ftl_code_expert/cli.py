@@ -3612,6 +3612,9 @@ def research(ctx, review_file, limit, dry_run):
         files = _parse_inferred_files(result)
         click.echo(f"  {candidate['id']}: {files}", err=True)
         for f in files:
+            if os.path.isabs(f) or ".." in f.split(os.sep):
+                click.echo(f"    Skipping {f} (unsafe path)", err=True)
+                continue
             abs_path = os.path.join(abs_repo, f)
             if not os.path.isfile(abs_path):
                 click.echo(f"    Skipping {f} (not found)", err=True)
