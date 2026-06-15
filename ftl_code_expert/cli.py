@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import click
@@ -4037,10 +4037,9 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
                f"{len(inconclusive)} inconclusive", err=True)
 
     # Stamp verified_at on confirmed beliefs
-    if confirmed:
+    if confirmed and _has_reasons() and Path("reasons.db").exists():
         try:
             from reasons_lib.api import _with_network
-            from datetime import datetime, timezone
             with _with_network("reasons.db", write=True) as net:
                 now = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 stamped = 0
