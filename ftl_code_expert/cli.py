@@ -3081,7 +3081,7 @@ async def _verify_belief_with_observations(
     bid = belief["id"]
     source = node.get("source", "")
 
-    seed_context = "(no initial source file)"
+    seed_context = ""
     src_file = (node.get("metadata") or {}).get("source_file")
     if not src_file:
         src_file = _extract_source_file(source, project_dir)
@@ -3097,7 +3097,7 @@ async def _verify_belief_with_observations(
     observe_prompt = VERIFY_OBSERVE_PROMPT.format(
         belief_id=bid,
         belief_text=belief["text"],
-        seed_context=seed_context,
+        seed_context=seed_context or "(no initial source file)",
         tree=tree,
     )
     observe_response = await invoke(observe_prompt, model, timeout=timeout)
@@ -3108,7 +3108,7 @@ async def _verify_belief_with_observations(
         obs_results = await run_observations(requested_obs, repo_path)
 
     context_parts: list[str] = []
-    if src_file and seed_context != "(no initial source file)":
+    if seed_context:
         context_parts.append(seed_context)
     if obs_results:
         context_parts.append(
