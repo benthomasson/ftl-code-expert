@@ -1,4 +1,64 @@
-"""Prompt template for verifying belief staleness against current source code."""
+"""Prompt templates for verifying belief staleness against current source code."""
+
+VERIFY_OBSERVE_PROMPT = """\
+You are preparing to verify whether a belief about a codebase still holds.
+
+## Belief to Verify
+
+**ID:** {belief_id}
+
+**Claim:** {belief_text}
+
+## Initial Code Context
+
+{seed_context}
+
+## Repository Structure
+
+```
+{tree}
+```
+
+## Your Task
+
+Determine what additional information you need to confirm or refute this belief.
+Do NOT verify the belief yet. Only request observations.
+
+## Available Observation Tools
+
+| Tool | Purpose | Params |
+|------|---------|--------|
+| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
+| `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
+| `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
+| `find_symbol` | Find where a class/function is defined | `symbol` |
+| `find_usages` | Find where a symbol is used | `symbol` |
+| `file_imports` | Extract imports from a file | `file_path` |
+
+## Output Format
+
+Output a JSON array of observation requests:
+
+```json
+[
+  {{"name": "descriptive_name", "tool": "tool_name", "params": {{"param": "value"}}}},
+  ...
+]
+```
+
+## Guidelines
+
+- Request 3-8 observations. Be targeted, not exhaustive.
+- Focus on what you need to verify the specific claim above.
+- If the initial code context already covers the claim, request observations that would \
+confirm related behavior (callers, tests, configuration).
+- Use `find_usages` to trace how functions/classes are actually used.
+- Use `find_symbol` to locate definitions referenced in the belief.
+- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.
+
+Now output your observation requests as JSON:
+"""
+
 
 VERIFY_PROMPT = """\
 You are verifying whether beliefs about a codebase still hold by examining the current source code.
