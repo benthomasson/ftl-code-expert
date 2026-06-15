@@ -18,3 +18,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ftl_code_expert"]
+
+[tool.uv.sources]
+ftl-reasons = { path = "../ftl-reasons" }
+
+[dependency-groups]
+dev = [
+    "ftl-reasons",
+]
