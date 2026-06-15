@@ -3012,7 +3012,7 @@ async def _gather_belief_context(
 
     parts: list[str] = []
 
-    src_file = node.get("metadata", {}).get("source_file")
+    src_file = (node.get("metadata") or {}).get("source_file")
     if not src_file:
         src_file = _extract_source_file(source, project_dir)
     if src_file:
