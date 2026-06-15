@@ -3689,19 +3689,25 @@ def _parse_verify_response(response: str) -> dict[str, dict]:
     """Parse LLM verify response into {id: {verdict, reason}} dict."""
     m = re.search(r"\{.*\}", response, re.DOTALL)
     if not m:
+        click.echo("  WARN: no JSON found in LLM response", err=True)
         return {}
     try:
         data = json.loads(m.group(0))
-        results = {}
-        for k, v in data.items():
-            if isinstance(v, dict) and "verdict" in v:
-                results[k] = {
-                    "verdict": v["verdict"].upper(),
-                    "reason": v.get("reason", ""),
-                }
-        return results
-    except (json.JSONDecodeError, TypeError, AttributeError):
+    except (json.JSONDecodeError, TypeError):
+        click.echo("  WARN: failed to parse JSON from LLM response", err=True)
         return {}
+    results = {}
+    for k, v in data.items():
+        if not isinstance(v, dict) or "verdict" not in v:
+            continue
+        verdict = v["verdict"]
+        if not isinstance(verdict, str):
+            continue
+        results[k] = {
+            "verdict": verdict.upper(),
+            "reason": v.get("reason", ""),
+        }
+    return results
 
 
 @cli.command("verify")
@@ -3853,7 +3859,7 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
         result = all_results.get(bid)
         if not result:
             inconclusive.append(bid)
-            click.echo(f"  {bid}: INCONCLUSIVE (no LLM response)", err=True)
+            click.echo(f"  {bid}: INCONCLUSIVE (no verdict returned)", err=True)
             continue
 
         verdict = result["verdict"]
