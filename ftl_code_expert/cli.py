@@ -31,6 +31,7 @@ from .llm import check_model_available, invoke, invoke_concurrent, invoke_concur
 from .observations import parse_observation_requests, run_observations
 from .prompts import (
     PROPOSE_BELIEFS_CODE,
+    RESEARCH_INFER_FILES_PROMPT,
     REVIEW_PROMPT,
     build_diff_prompt,
     build_diff_summary_prompt,
@@ -3473,6 +3474,211 @@ def generate_summary(ctx, snapshot_ids):
     _create_entry("update", "Update Summary", content)
     click.echo(f"\nSummary: {len(new_gated)} new gated OUT, {len(new_negative)} new negative IN, "
                f"{len(critical_gated) + len(critical_negative)} critical", err=True)
+
+
+# --- research ---
+
+
+def _get_explored_files() -> set[str]:
+    """Scan entries/ for '# File: <path>' headers to find already-explored files."""
+    explored = set()
+    entries_dir = Path("entries")
+    if not entries_dir.exists():
+        return explored
+    for entry_path in entries_dir.rglob("*.md"):
+        try:
+            for line in entry_path.read_text().splitlines()[:5]:
+                if line.startswith("# File: "):
+                    explored.add(line[8:].strip())
+                    break
+        except OSError:
+            pass
+    return explored
+
+
+def _parse_review_candidates(review_file: str) -> list[dict]:
+    """Parse review JSON and return candidates where sufficient=false or valid=false."""
+    with open(review_file) as f:
+        data = json.load(f)
+    candidates = []
+    for result in data.get("results", []):
+        if not result.get("sufficient", True) or not result.get("valid", True):
+            candidates.append(result)
+    return candidates
+
+
+def _parse_inferred_files(response: str) -> list[str]:
+    """Extract JSON array of file paths from LLM response."""
+    for m in re.finditer(r"\[.*?\]", response, re.DOTALL):
+        try:
+            files = json.loads(m.group(0))
+            if isinstance(files, list) and all(isinstance(f, str) for f in files):
+                return files
+        except json.JSONDecodeError:
+            continue
+    return []
+
+
+@cli.command("research")
+@click.option("--review-file", required=True, type=click.Path(exists=True),
+              help="Path to review JSON file (from review-beliefs)")
+@click.option("--limit", type=int, default=None,
+              help="Max candidates to research")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show candidates and inferred files without exploring")
+@click.pass_context
+def research(ctx, review_file, limit, dry_run):
+    """Evidence-driven exploration from belief review gaps.
+
+    Reads a review JSON file (from review-beliefs), identifies beliefs
+    lacking evidence, infers which source files to explore, then runs
+    the explore → propose → accept pipeline.
+
+    Example:
+        code-expert research --review-file reviews/review-beliefs-2026-06-13.json
+        code-expert research --review-file review.json --dry-run
+        code-expert -j 5 research --review-file review.json
+    """
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
+
+    model = ctx.obj["model"]
+    timeout = ctx.obj["timeout"]
+    parallel = ctx.obj["parallel"]
+    repo_path = _get_repo(ctx)
+    abs_repo = os.path.abspath(repo_path)
+
+    if not check_model_available(model):
+        click.echo(f"Error: Model '{model}' CLI not available", err=True)
+        sys.exit(1)
+
+    # Step 1: Parse review and find candidates
+    candidates = _parse_review_candidates(review_file)
+    if not candidates:
+        click.echo("No research candidates found (all beliefs have sufficient evidence).")
+        return
+
+    if limit:
+        candidates = candidates[:limit]
+
+    click.echo(f"Found {len(candidates)} research candidate(s)", err=True)
+    for c in candidates:
+        status = []
+        if not c.get("valid", True):
+            status.append("invalid")
+        if not c.get("sufficient", True):
+            status.append("insufficient")
+        click.echo(f"  {c['id']} [{', '.join(status)}]", err=True)
+        click.echo(f"    {c['comment'][:120]}", err=True)
+
+    # Step 2: Load belief network for claim text
+    try:
+        network = _load_network()
+        nodes = network.get("nodes", {})
+    except Exception:
+        nodes = {}
+
+    # Step 3: Collect already-explored files
+    explored = _get_explored_files()
+    if explored:
+        click.echo(f"\n{len(explored)} files already explored", err=True)
+
+    # Step 4: Infer source files via LLM
+    click.echo(f"\nInferring source files with {model}...", err=True)
+    repo_tree = get_repo_structure(abs_repo, max_depth=3)
+    explored_list = "\n".join(f"- {f}" for f in sorted(explored)) if explored else "(none)"
+
+    prompts = []
+    for c in candidates:
+        node = nodes.get(c["id"], {})
+        belief_text = node.get("text", c["id"])
+        prompts.append(RESEARCH_INFER_FILES_PROMPT.format(
+            belief_id=c["id"],
+            belief_text=belief_text,
+            comment=c["comment"],
+            repo_tree=repo_tree,
+            explored_files=explored_list,
+        ))
+
+    results = invoke_concurrent_sync(prompts, model=model, timeout=timeout, max_concurrent=parallel)
+
+    # Step 5: Collect and deduplicate inferred files
+    all_files: dict[str, list[str]] = {}  # file_path → list of belief_ids that need it
+    for i, result in enumerate(results):
+        candidate = candidates[i]
+        if isinstance(result, Exception):
+            click.echo(f"  Error inferring files for {candidate['id']}: {result}", err=True)
+            continue
+        files = _parse_inferred_files(result)
+        click.echo(f"  {candidate['id']}: {files}", err=True)
+        for f in files:
+            if os.path.isabs(f) or ".." in f.split(os.sep):
+                click.echo(f"    Skipping {f} (unsafe path)", err=True)
+                continue
+            abs_path = os.path.join(abs_repo, f)
+            if not os.path.isfile(abs_path):
+                click.echo(f"    Skipping {f} (not found)", err=True)
+                continue
+            if f in explored:
+                click.echo(f"    Skipping {f} (already explored)", err=True)
+                continue
+            all_files.setdefault(f, []).append(candidate["id"])
+
+    if not all_files:
+        click.echo("\nNo new files to explore.", err=True)
+        return
+
+    click.echo(f"\n{len(all_files)} file(s) to explore:", err=True)
+    for f, belief_ids in all_files.items():
+        click.echo(f"  {f} (for: {', '.join(belief_ids)})", err=True)
+
+    if dry_run:
+        click.echo("\n--dry-run: stopping before exploration.", err=True)
+        return
+
+    # Step 6: Build topics and explore
+    from .topics import Topic
+    topics = [
+        Topic(
+            title=f"Research: evidence for {', '.join(belief_ids)}",
+            kind="file",
+            target=file_path,
+            source=f"research:{','.join(belief_ids)}",
+        )
+        for file_path, belief_ids in all_files.items()
+    ]
+
+    click.echo(f"\nExploring {len(topics)} file(s)...", err=True)
+    if parallel > 1 and len(topics) > 1:
+        batch_results = asyncio.run(
+            _explore_topics_concurrent(topics, model, abs_repo, timeout, parallel)
+        )
+        for r in batch_results:
+            if isinstance(r, Exception):
+                click.echo(f"  Error: {r}", err=True)
+            elif r is not None:
+                _, result, entry_name, entry_title, source = r
+                _finalize_topic(ctx, entry_name, entry_title, source, result)
+    else:
+        for topic in topics:
+            try:
+                _run_file_topic(ctx, topic, model, abs_repo)
+            except (SystemExit, Exception) as e:
+                click.echo(f"  Error exploring {topic.target}: {e}", err=True)
+
+    # Step 7: Propose and accept beliefs from new entries
+    click.echo(f"\n{'=' * 40}", err=True)
+    click.echo("Proposing and accepting beliefs from new entries...", err=True)
+    click.echo(f"{'=' * 40}", err=True)
+    try:
+        ctx.invoke(propose_beliefs, auto_accept=True)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            click.echo(f"WARN: propose-beliefs failed (exit {e.code})", err=True)
+    except Exception as e:
+        click.echo(f"WARN: propose-beliefs failed: {e}", err=True)
+
+    click.echo("\nResearch complete. Run `code-expert derive` to attempt rejustification.", err=True)
 
 
 # --- update ---
