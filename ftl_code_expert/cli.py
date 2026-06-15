@@ -33,6 +33,7 @@ from .prompts import (
     PROPOSE_BELIEFS_CODE,
     RESEARCH_INFER_FILES_PROMPT,
     REVIEW_PROMPT,
+    VERIFY_PROMPT,
     build_diff_prompt,
     build_diff_summary_prompt,
     build_file_prompt,
@@ -3679,6 +3680,221 @@ def research(ctx, review_file, limit, dry_run):
         click.echo(f"WARN: propose-beliefs failed: {e}", err=True)
 
     click.echo("\nResearch complete. Run `code-expert derive` to attempt rejustification.", err=True)
+
+
+# --- verify ---
+
+
+def _parse_verify_response(response: str) -> dict[str, dict]:
+    """Parse LLM verify response into {id: {verdict, reason}} dict."""
+    m = re.search(r"\{.*\}", response, re.DOTALL)
+    if not m:
+        click.echo("  WARN: no JSON found in LLM response", err=True)
+        return {}
+    try:
+        data = json.loads(m.group(0))
+    except (json.JSONDecodeError, TypeError):
+        click.echo("  WARN: failed to parse JSON from LLM response", err=True)
+        return {}
+    results = {}
+    for k, v in data.items():
+        if not isinstance(v, dict) or "verdict" not in v:
+            continue
+        verdict = v["verdict"]
+        if not isinstance(verdict, str):
+            continue
+        results[k] = {
+            "verdict": verdict.upper(),
+            "reason": v.get("reason", ""),
+        }
+    return results
+
+
+@cli.command("verify")
+@click.argument("belief_ids", nargs=-1)
+@click.option("--category", default=None,
+              help="Verify IN beliefs matching keyword in ID or text")
+@click.option("--gated", is_flag=True, default=False,
+              help="Verify IN beliefs that actively gate downstream chains")
+@click.option("--negative", is_flag=True, default=False,
+              help="Verify negative IN beliefs (bugs, gaps, risks)")
+@click.option("--all", "verify_all", is_flag=True, default=False,
+              help="Verify all IN beliefs (expensive)")
+@click.option("--retract", is_flag=True, default=False,
+              help="Retract STALE beliefs via reasons")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be verified without calling LLM")
+@click.option("--batch-size", type=int, default=10,
+              help="Beliefs per LLM batch (default: 10)")
+@click.pass_context
+def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size):
+    """Check whether beliefs still hold against current source code.
+
+    Reads the current source code for each belief and asks an LLM whether
+    the claim is CONFIRMED, STALE, or INCONCLUSIVE.
+
+    Examples:
+        code-expert verify login-audit-always-success-info
+        code-expert verify --category auth
+        code-expert verify --gated
+        code-expert verify --negative --retract
+        code-expert verify --all --dry-run
+    """
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
+
+    model = ctx.obj["model"]
+    timeout = ctx.obj["timeout"]
+    repo_path = _get_repo(ctx)
+    abs_repo = os.path.abspath(repo_path)
+    project_dir = _get_project_dir(ctx)
+
+    if not check_model_available(model):
+        click.echo(f"Error: Model '{model}' CLI not available", err=True)
+        sys.exit(1)
+
+    # Load belief network
+    try:
+        network = _load_network()
+        nodes = network.get("nodes", {})
+    except Exception as e:
+        click.echo(f"Error loading belief network: {e}", err=True)
+        sys.exit(1)
+
+    if not nodes:
+        click.echo("No beliefs found. Run explorations and propose-beliefs first.")
+        return
+
+    # Select beliefs to verify
+    beliefs: list[dict] = []
+
+    if belief_ids:
+        for bid in belief_ids:
+            node = nodes.get(bid)
+            if node:
+                beliefs.append({"id": bid, "text": node.get("text", "")})
+            else:
+                click.echo(f"  Belief not found: {bid}", err=True)
+
+    elif gated:
+        gated_beliefs = _find_gated_out_beliefs(nodes)
+        blocker_ids = set()
+        for gb in gated_beliefs:
+            for blocker in gb.get("blockers", []):
+                blocker_ids.add(blocker["id"])
+        for bid in blocker_ids:
+            node = nodes.get(bid, {})
+            beliefs.append({"id": bid, "text": node.get("text", "")})
+        click.echo(f"Found {len(beliefs)} active blocker(s) gating {len(gated_beliefs)} downstream belief(s)", err=True)
+
+    elif negative:
+        beliefs = _get_negative_beliefs(nodes, model=model)
+        click.echo(f"Found {len(beliefs)} negative IN belief(s)", err=True)
+
+    elif category:
+        keyword = category.lower()
+        for nid, node in nodes.items():
+            if node.get("truth_value") != "IN":
+                continue
+            if keyword in nid.lower() or keyword in node.get("text", "").lower():
+                beliefs.append({"id": nid, "text": node.get("text", "")})
+        click.echo(f"Found {len(beliefs)} IN belief(s) matching '{category}'", err=True)
+
+    elif verify_all:
+        for nid, node in nodes.items():
+            if node.get("truth_value") == "IN":
+                beliefs.append({"id": nid, "text": node.get("text", "")})
+        click.echo(f"Found {len(beliefs)} IN belief(s) to verify", err=True)
+
+    else:
+        click.echo("Specify belief IDs, or use --category, --gated, --negative, or --all.", err=True)
+        sys.exit(1)
+
+    if not beliefs:
+        click.echo("No beliefs to verify.")
+        return
+
+    if dry_run:
+        click.echo(f"\n{len(beliefs)} belief(s) would be verified:", err=True)
+        for b in beliefs:
+            click.echo(f"  {b['id']}: {b['text'][:100]}", err=True)
+        click.echo("\n--dry-run: stopping before LLM verification.", err=True)
+        return
+
+    # Verify in batches
+    all_results: dict[str, dict] = {}
+    batches = [beliefs[i:i + batch_size] for i in range(0, len(beliefs), batch_size)]
+
+    for i, batch in enumerate(batches):
+        click.echo(f"\nVerifying batch {i + 1}/{len(batches)} ({len(batch)} beliefs)...", err=True)
+
+        contexts = asyncio.run(
+            _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
+        )
+
+        beliefs_section = []
+        for belief in batch:
+            ctx_text = contexts.get(belief["id"], "(no code context found)")
+            beliefs_section.append(
+                f"### `{belief['id']}`\n{belief['text']}\n\n"
+                f"**Code context:**\n{ctx_text}"
+            )
+
+        prompt = VERIFY_PROMPT.format(beliefs="\n\n---\n\n".join(beliefs_section))
+
+        try:
+            response = invoke_sync(prompt, model=model, timeout=timeout)
+            results = _parse_verify_response(response)
+            all_results.update(results)
+        except Exception as e:
+            click.echo(f"  Error: {e}", err=True)
+
+    # Report results
+    confirmed = []
+    stale = []
+    inconclusive = []
+
+    for belief in beliefs:
+        bid = belief["id"]
+        result = all_results.get(bid)
+        if not result:
+            inconclusive.append(bid)
+            click.echo(f"  {bid}: INCONCLUSIVE (no verdict returned)", err=True)
+            continue
+
+        verdict = result["verdict"]
+        reason = result.get("reason", "")
+
+        if verdict == "CONFIRMED":
+            confirmed.append(bid)
+            click.echo(f"  {bid}: CONFIRMED — {reason}", err=True)
+        elif verdict == "STALE":
+            stale.append(bid)
+            click.echo(f"  {bid}: STALE — {reason}", err=True)
+        else:
+            inconclusive.append(bid)
+            click.echo(f"  {bid}: INCONCLUSIVE — {reason}", err=True)
+
+    click.echo(f"\nResults: {len(confirmed)} confirmed, {len(stale)} stale, "
+               f"{len(inconclusive)} inconclusive", err=True)
+
+    # Retract stale beliefs
+    if retract and stale and _has_reasons():
+        click.echo(f"\nRetracting {len(stale)} stale belief(s)...", err=True)
+        for bid in stale:
+            reason = all_results.get(bid, {}).get("reason", "stale per verify")
+            result = subprocess.run(
+                ["reasons", "retract", bid, "--reason", reason],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                click.echo(f"  Retracted: {bid}", err=True)
+            else:
+                click.echo(f"  Failed to retract {bid}: {result.stderr.strip()}", err=True)
+        _reasons_export()
+        click.echo("Network updated.", err=True)
+    elif retract and stale:
+        click.echo("\nCannot retract: reasons CLI not available.", err=True)
 
 
 # --- update ---
