@@ -9,6 +9,7 @@ from .derive import DERIVE_BELIEFS_PROMPT
 from .propose import PROPOSE_BELIEFS_CODE
 from .research import RESEARCH_INFER_FILES_PROMPT
 from .review import REVIEW_PROMPT
+from .verify import VERIFY_PROMPT
 from .repo import build_repo_prompt
 from .scan import build_scan_prompt
 from .spec import GENERATE_SPEC_PROMPT
@@ -20,6 +21,7 @@ __all__ = [
     "PROPOSE_BELIEFS_CODE",
     "RESEARCH_INFER_FILES_PROMPT",
     "REVIEW_PROMPT",
+    "VERIFY_PROMPT",
     "TOPICS_INSTRUCTIONS",
     "build_diff_prompt",
     "build_diff_summary_prompt",
