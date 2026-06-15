@@ -3072,7 +3072,7 @@ async def _auto_gather_verify_observations(
     Reads the source file, finds key symbols, and runs find_usages/grep
     in parallel. Returns (src_file, observations_dict).
     """
-    from .observations import find_symbol, find_usages, grep, read_file
+    from .observations import find_usages, grep, read_file
 
     bid = belief["id"]
     source = node.get("source", "")
@@ -3903,7 +3903,7 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
         sys.exit(1)
 
     # Re-export to ensure fresh metadata (fixes stale network.json)
-    if _has_reasons():
+    if not dry_run and _has_reasons():
         _reasons_export()
 
     # Load belief network
