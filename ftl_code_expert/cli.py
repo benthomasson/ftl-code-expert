@@ -3509,15 +3509,13 @@ def _parse_review_candidates(review_file: str) -> list[dict]:
 
 def _parse_inferred_files(response: str) -> list[str]:
     """Extract JSON array of file paths from LLM response."""
-    m = re.search(r"\[.*?\]", response, re.DOTALL)
-    if not m:
-        return []
-    try:
-        files = json.loads(m.group(0))
-        if isinstance(files, list):
-            return [f for f in files if isinstance(f, str)]
-    except json.JSONDecodeError:
-        pass
+    for m in re.finditer(r"\[.*?\]", response, re.DOTALL):
+        try:
+            files = json.loads(m.group(0))
+            if isinstance(files, list) and all(isinstance(f, str) for f in files):
+                return files
+        except json.JSONDecodeError:
+            continue
     return []
 
 
@@ -3660,7 +3658,10 @@ def research(ctx, review_file, limit, dry_run):
                 _finalize_topic(ctx, entry_name, entry_title, source, result)
     else:
         for topic in topics:
-            _run_file_topic(ctx, topic, model, abs_repo)
+            try:
+                _run_file_topic(ctx, topic, model, abs_repo)
+            except (SystemExit, Exception) as e:
+                click.echo(f"  Error exploring {topic.target}: {e}", err=True)
 
     # Step 7: Propose and accept beliefs from new entries
     click.echo(f"\n{'=' * 40}", err=True)
