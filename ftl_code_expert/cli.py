@@ -1648,6 +1648,13 @@ def _accept_proposals(matches: list[tuple[str, str, str]]) -> tuple[int, int, in
             if result.returncode == 0:
                 click.echo(f"  Added: {belief_id}")
                 added += 1
+                src_file = _extract_source_file(source.strip())
+                if src_file:
+                    subprocess.run(
+                        ["reasons", "set-metadata", belief_id,
+                         "source_file", src_file],
+                        capture_output=True, text=True,
+                    )
             else:
                 stderr = result.stderr.strip()
                 stdout = result.stdout.strip()
@@ -3005,7 +3012,9 @@ async def _gather_belief_context(
 
     parts: list[str] = []
 
-    src_file = _extract_source_file(source, project_dir)
+    src_file = node.get("metadata", {}).get("source_file")
+    if not src_file:
+        src_file = _extract_source_file(source, project_dir)
     if src_file:
         result = await read_file(src_file, repo_path, max_lines=300)
         if "content" in result:
