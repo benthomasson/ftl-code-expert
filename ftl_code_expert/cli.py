@@ -2218,6 +2218,7 @@ def _reasons_export():
         beliefs_path.write_text(result.stdout)
         click.echo(f"Updated {beliefs_path}")
 
+    # reasons export writes network.json directly (stdout is just a status message)
     result = subprocess.run(
         ["reasons", "export"],
         capture_output=True, text=True,
@@ -3099,7 +3100,7 @@ async def _verify_belief_with_observations(
         seed_context=seed_context,
         tree=tree,
     )
-    observe_response = await invoke(observe_prompt, model)
+    observe_response = await invoke(observe_prompt, model, timeout=timeout)
     requested_obs = parse_observation_requests(observe_response)
 
     obs_results = {}
