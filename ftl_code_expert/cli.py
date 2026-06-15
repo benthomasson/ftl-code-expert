@@ -3061,6 +3061,57 @@ async def _gather_confirmation_context(
     return contexts
 
 
+async def _auto_gather_verify_observations(
+    belief: dict,
+    node: dict,
+    repo_path: str,
+    project_dir: str | None,
+) -> tuple[str | None, dict]:
+    """Auto-gather observations for a belief before LLM involvement.
+
+    Reads the source file, finds key symbols, and runs find_usages/grep
+    in parallel. Returns (src_file, observations_dict).
+    """
+    from .observations import find_symbol, find_usages, grep, read_file
+
+    bid = belief["id"]
+    source = node.get("source", "")
+    obs: dict = {}
+
+    src_file = (node.get("metadata") or {}).get("source_file")
+    if not src_file:
+        src_file = _extract_source_file(source, project_dir)
+
+    auto_tasks = []
+    auto_names = []
+
+    if src_file:
+        auto_tasks.append(read_file(src_file, repo_path, max_lines=500))
+        auto_names.append(f"source_file:{src_file}")
+
+    terms = [t for t in bid.replace("-", " ").split() if len(t) > 3]
+    symbols = []
+    for term in terms[:3]:
+        if term[0].isupper() or "_" in term:
+            symbols.append(term)
+
+    for sym in symbols[:2]:
+        auto_tasks.append(find_usages(sym, repo_path))
+        auto_names.append(f"find_usages:{sym}")
+
+    if not symbols and terms:
+        auto_tasks.append(grep(terms[0], repo_path, glob="*.py", max_results=10))
+        auto_names.append(f"grep:{terms[0]}")
+
+    results = await asyncio.gather(*auto_tasks, return_exceptions=True)
+    for name, result in zip(auto_names, results):
+        if isinstance(result, Exception):
+            continue
+        obs[name] = result
+
+    return src_file, obs
+
+
 async def _verify_belief_with_observations(
     belief: dict,
     node: dict,
@@ -3071,24 +3122,23 @@ async def _verify_belief_with_observations(
 ) -> tuple[str, str]:
     """Gather code context for a belief using the observe pattern.
 
-    1. Seed with source_file contents from metadata
-    2. Ask LLM what observations it needs to verify the belief
-    3. Execute observations in parallel
+    1. Auto-gather: read source file + find_usages/grep for key symbols
+    2. Ask LLM what additional observations it needs
+    3. Execute LLM-requested observations in parallel
     4. Return combined context
     """
-    from .observations import read_file
-
     bid = belief["id"]
-    source = node.get("source", "")
+
+    src_file, auto_obs = await _auto_gather_verify_observations(
+        belief, node, repo_path, project_dir,
+    )
 
     seed_context = ""
-    src_file = (node.get("metadata") or {}).get("source_file")
-    if not src_file:
-        src_file = _extract_source_file(source, project_dir)
-    if src_file:
-        result = await read_file(src_file, repo_path, max_lines=300)
-        if "content" in result:
-            content = result["content"]
+    source_key = f"source_file:{src_file}" if src_file else None
+    if source_key and source_key in auto_obs:
+        file_result = auto_obs[source_key]
+        if "content" in file_result:
+            content = file_result["content"]
             if len(content) > 4000:
                 content = content[:4000] + "\n... (truncated)"
             seed_context = f"### {src_file}\n```\n{content}\n```"
@@ -3103,17 +3153,21 @@ async def _verify_belief_with_observations(
     observe_response = await invoke(observe_prompt, model, timeout=timeout)
     requested_obs = parse_observation_requests(observe_response)
 
-    obs_results = {}
+    llm_obs = {}
     if requested_obs:
-        obs_results = await run_observations(requested_obs, repo_path)
+        llm_obs = await run_observations(requested_obs, repo_path)
+
+    all_obs = {**auto_obs, **llm_obs}
 
     context_parts: list[str] = []
     if seed_context:
         context_parts.append(seed_context)
-    if obs_results:
-        context_parts.append(
-            f"## Observations\n\n```json\n{json.dumps(obs_results, indent=2, default=str)}\n```"
-        )
+    if all_obs:
+        display_obs = {k: v for k, v in all_obs.items() if k != source_key}
+        if display_obs:
+            context_parts.append(
+                f"## Observations\n\n```json\n{json.dumps(display_obs, indent=2, default=str)}\n```"
+            )
 
     return bid, "\n\n".join(context_parts) if context_parts else "(no code context found)"
 
