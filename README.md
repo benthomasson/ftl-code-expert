@@ -15,7 +15,7 @@ uv tool install git+https://github.com/benthomasson/ftl-code-expert
 Prerequisites — these CLIs must be on your PATH:
 
 - `git`
-- [`beliefs`](https://github.com/benthomasson/beliefs) — belief registry management
+- [`reasons`](https://github.com/benthomasson/ftl-reasons) — reason maintenance system
 - [`entry`](https://github.com/benthomasson/entry) — chronological entry creation
 - `claude` or `gemini` — at least one LLM CLI
 
@@ -82,6 +82,16 @@ derive            Compute logical consequences across the belief network
   │                 ├── DERIVE   Conclusion holds when all premises hold
   │                 ├── GATE     Positive claim holds UNLESS a blocker is IN
   │                 └── --exhaust Loop until no new derivations (fixed-point)
+  │
+  ▼
+verify            Re-examine beliefs against current source code
+  │                 ├── Observe  Auto-gather context + LLM-requested observations
+  │                 ├── Verdict  CONFIRMED / STALE / INCONCLUSIVE
+  │                 └── --retract Retract STALE beliefs with cascade
+  │
+  ▼
+research          Evidence-driven exploration from review gaps
+  │                 └── review-beliefs → infer source files → explore → propose → accept
   │
   ▼
 generate-summary  Morning report: new gated OUT, new negative IN, critical watch list
@@ -265,6 +275,55 @@ For each candidate:
 - Creates an issue with description and resolution instructions (including `reasons retract` command)
 
 Requires `gh` (GitHub) or `glab` (GitLab) CLI to be installed and authenticated.
+
+### `code-expert verify`
+
+Check whether beliefs still hold against current source code. Uses the observation system to gather context — reads the source file, auto-gathers `find_usages` and `grep` results, then asks the LLM for additional observations before rendering a verdict. Stamps `verified_at` on confirmed beliefs.
+
+```bash
+code-expert verify login-audit-always-success-info     # specific belief
+code-expert verify --category auth                      # all auth-related beliefs
+code-expert verify --gated                              # beliefs blocking downstream chains
+code-expert verify --negative --retract                 # verify negative beliefs, retract stale ones
+code-expert verify --all --dry-run                      # preview what would be verified
+code-expert verify --no-observe belief-id               # skip observation loop (faster, less context)
+```
+
+Verdicts:
+- **CONFIRMED** — current code supports the claim, `verified_at` is stamped
+- **STALE** — code has changed, belief no longer holds. Use `--retract` to retract with cascade
+- **INCONCLUSIVE** — insufficient context to determine
+
+### `code-expert research`
+
+Evidence-driven exploration from belief review gaps. Reads a review JSON file (from `review-beliefs`), identifies beliefs lacking evidence, uses the LLM to infer which source files to explore, then runs the explore → propose → accept pipeline.
+
+```bash
+code-expert research --review-file reviews/review-2026-06-13.json
+code-expert research --review-file review.json --limit 5     # cap at 5 beliefs
+code-expert research --review-file review.json --dry-run     # preview candidates
+code-expert -j 5 research --review-file review.json          # parallel exploration
+```
+
+### `code-expert generate-spec`
+
+Generate a component specification from beliefs matching keywords. Gathers matching beliefs and relevant source files, then produces a structured spec.
+
+```bash
+code-expert generate-spec Synthesizer -k "synth,citation,tree-synth"
+code-expert generate-spec AuthMiddleware -k "auth,middleware" -s src/auth/middleware.py
+code-expert generate-spec Router -k "router,route" --dry-run
+```
+
+### `code-expert generate-prd`
+
+Generate a Product Requirements Document from beliefs, specs, and derived conclusions.
+
+```bash
+code-expert generate-prd "My Product"
+code-expert generate-prd "My Product" -s policy -s gate    # filter specs by keyword
+code-expert generate-prd "My Product" -o prd.md            # custom output file
+```
 
 ### `code-expert update`
 
