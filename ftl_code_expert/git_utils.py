@@ -185,6 +185,40 @@ def get_file_content(path: str) -> str | None:
         return None
 
 
+BINARY_EXTENSIONS = frozenset({
+    ".pyc", ".pyo", ".so", ".o", ".a", ".dylib",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
+    ".jar", ".war", ".class", ".exe", ".dll",
+    ".bin", ".dat", ".db", ".sqlite", ".sqlite3", ".pdf",
+})
+
+
+def list_source_files(repo_path: str) -> list[str]:
+    """List all tracked source files using git ls-files.
+
+    Filters out binary files by extension. Returns paths relative to repo root.
+    """
+    result = subprocess.run(
+        ["git", "ls-files"],
+        capture_output=True, text=True, cwd=repo_path,
+    )
+    if result.returncode != 0:
+        return []
+    files = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        ext = os.path.splitext(line)[1].lower()
+        if ext not in BINARY_EXTENSIONS:
+            files.append(line)
+    files.sort(key=lambda p: (p.count("/"), p))
+    return files
+
+
 def get_repo_structure(repo_path: str, max_depth: int = 4) -> str:
     """
     Get filtered directory tree of a repository.

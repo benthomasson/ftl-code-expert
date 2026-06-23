@@ -24,6 +24,7 @@ from .git_utils import (
     get_imports,
     get_repo_structure,
     list_commits_with_files,
+    list_source_files,
     load_diff_checkpoint,
     save_diff_checkpoint,
 )
@@ -44,6 +45,7 @@ from .prompts import (
     build_scan_prompt,
 )
 from .topics import (
+    Topic,
     add_topics,
     load_queue,
     parse_topics_from_response,
@@ -364,8 +366,20 @@ def scan(ctx):
     repo_name = os.path.basename(repo_path)
     _create_entry(f"scan-{repo_name}", f"Scan: {repo_name}", result)
 
-    # Enqueue topics
-    _enqueue_topics(result, source=f"scan:{repo_name}", project_dir=_get_project_dir(ctx))
+    project_dir = _get_project_dir(ctx)
+
+    # Enumerate all source files as file topics (BFS: breadth before depth)
+    source_files = list_source_files(repo_path)
+    if source_files:
+        file_topics = [
+            Topic(title=f, kind="file", target=f, source=f"scan:{repo_name}")
+            for f in source_files
+        ]
+        added = add_topics(file_topics, project_dir)
+        click.echo(f"Queued {added} file(s) for exploration", err=True)
+
+    # Enqueue LLM-suggested topics (functions, generals appended after files)
+    _enqueue_topics(result, source=f"scan:{repo_name}", project_dir=project_dir)
 
     _emit(ctx, result)
 
@@ -1334,7 +1348,6 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
         sys.exit(1)
 
     # Build topics for each unique file
-    from .topics import Topic
     timeout = ctx.obj["timeout"]
     parallel = ctx.obj["parallel"]
     all_topics = []
@@ -3785,7 +3798,6 @@ def research(ctx, review_file, limit, dry_run):
         return
 
     # Step 6: Build topics and explore
-    from .topics import Topic
     topics = [
         Topic(
             title=f"Research: evidence for {', '.join(belief_ids)}",
