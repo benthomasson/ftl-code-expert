@@ -4259,6 +4259,196 @@ def update(ctx, since, since_commit, since_last, do_file_issues):
         click.echo("All steps completed successfully.", err=True)
 
 
+# --- analyze ---
+
+
+@cli.command("analyze")
+@click.argument("repo_path", type=click.Path(exists=True, file_okay=False))
+@click.option("--domain", "-d", default=None, help="One-line domain description")
+@click.option("--limit", default=500, show_default=True,
+              help="Max files to explore (0 = unlimited)")
+@click.option("--file-issues", "do_file_issues", is_flag=True, default=False,
+              help="Also file GitHub/GitLab issues for active blockers")
+@click.pass_context
+def analyze(ctx, repo_path, domain, limit, do_file_issues):
+    """Full automated analysis of a codebase from scratch.
+
+    Runs the complete pipeline in one command:
+      1. init (bootstrap knowledge base)
+      2. scan (enumerate all source files + LLM overview)
+      3. explore (explore up to --limit files)
+      4. propose-beliefs (extract beliefs from entries)
+      5. review-proposals (LLM quality filter)
+      6. accept-beliefs (import reviewed beliefs)
+      7. derive --exhaust (compute all logical consequences)
+      8. generate-summary (summary report)
+
+    Example:
+        code-expert analyze ~/git/my-project --domain "Web framework"
+        code-expert analyze ~/git/my-project --limit 100
+        code-expert analyze ~/git/my-project --limit 0  # no cap
+    """
+    from .caffeinate import hold as _caffeinate
+    _caffeinate()
+
+    errors = []
+    started = datetime.now().isoformat(timespec="seconds")
+
+    # Step 1: init
+    click.echo("\n=== Step 1: Init ===\n", err=True)
+    try:
+        ctx.invoke(init, repo_path=repo_path, domain=domain)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"init exited with code {e.code}")
+            click.echo(f"WARN: init failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"init: {e}")
+        click.echo(f"WARN: init failed: {e}, continuing...", err=True)
+
+    # Step 2: scan
+    click.echo("\n=== Step 2: Scan ===\n", err=True)
+    try:
+        ctx.invoke(scan)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"scan exited with code {e.code}")
+            click.echo(f"WARN: scan failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"scan: {e}")
+        click.echo(f"WARN: scan failed: {e}, continuing...", err=True)
+
+    # Step 3: explore
+    project_dir = _get_project_dir(ctx)
+    explore_limit = limit if limit > 0 else pending_count(project_dir)
+    click.echo(f"\n=== Step 3: Explore (up to {explore_limit} topics) ===\n", err=True)
+    try:
+        ctx.invoke(explore, do_skip=False, pick_index=None, loop_max=explore_limit)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"explore exited with code {e.code}")
+            click.echo(f"WARN: explore failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"explore: {e}")
+        click.echo(f"WARN: explore failed: {e}, continuing...", err=True)
+
+    # Snapshot current node IDs before belief extraction
+    try:
+        network = _load_network()
+        pre_run_ids = set(network.get("nodes", {}).keys())
+    except Exception:
+        pre_run_ids = set()
+
+    # Step 4: propose-beliefs
+    click.echo("\n=== Step 4: Propose beliefs ===\n", err=True)
+    try:
+        ctx.invoke(propose_beliefs)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"propose-beliefs exited with code {e.code}")
+            click.echo(f"WARN: propose-beliefs failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"propose-beliefs: {e}")
+        click.echo(f"WARN: propose-beliefs failed: {e}, continuing...", err=True)
+
+    # Step 5: review-proposals
+    click.echo("\n=== Step 5: Review proposals ===\n", err=True)
+    try:
+        ctx.invoke(review_proposals)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"review-proposals exited with code {e.code}")
+            click.echo(f"WARN: review-proposals failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"review-proposals: {e}")
+        click.echo(f"WARN: review-proposals failed: {e}, continuing...", err=True)
+
+    # Step 6: accept-beliefs
+    click.echo("\n=== Step 6: Accept beliefs ===\n", err=True)
+    try:
+        ctx.invoke(accept_beliefs)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"accept-beliefs exited with code {e.code}")
+            click.echo(f"WARN: accept-beliefs failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"accept-beliefs: {e}")
+        click.echo(f"WARN: accept-beliefs failed: {e}, continuing...", err=True)
+
+    # Step 7: derive --exhaust
+    click.echo("\n=== Step 7: Derive (exhaust) ===\n", err=True)
+    try:
+        ctx.invoke(derive, exhaust=True)
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"derive exited with code {e.code}")
+            click.echo(f"WARN: derive failed (exit {e.code}), continuing...", err=True)
+    except Exception as e:
+        errors.append(f"derive: {e}")
+        click.echo(f"WARN: derive failed: {e}, continuing...", err=True)
+
+    # Step 8: generate-summary
+    click.echo("\n=== Step 8: Generate summary ===\n", err=True)
+    try:
+        ctx.invoke(generate_summary, snapshot_ids=tuple(pre_run_ids))
+    except SystemExit as e:
+        if e.code and e.code != 0:
+            errors.append(f"generate-summary exited with code {e.code}")
+    except Exception as e:
+        errors.append(f"generate-summary: {e}")
+        click.echo(f"WARN: generate-summary failed: {e}", err=True)
+
+    # Step 9 (opt-in): file-issues
+    if do_file_issues:
+        click.echo("\n=== Step 9: File issues ===\n", err=True)
+        try:
+            ctx.invoke(file_issues)
+        except SystemExit as e:
+            if e.code and e.code != 0:
+                errors.append(f"file-issues exited with code {e.code}")
+        except Exception as e:
+            errors.append(f"file-issues: {e}")
+            click.echo(f"WARN: file-issues failed: {e}", err=True)
+
+    # Save analyze checkpoint
+    try:
+        post_network = _load_network()
+        post_run_ids = set(post_network.get("nodes", {}).keys())
+    except Exception:
+        post_run_ids = pre_run_ids
+
+    checkpoint = {
+        "started": started,
+        "finished": datetime.now().isoformat(timespec="seconds"),
+        "explore_limit": limit,
+        "beliefs_before": len(pre_run_ids),
+        "beliefs_after": len(post_run_ids),
+        "beliefs_added": len(post_run_ids - pre_run_ids),
+        "errors": errors,
+    }
+    project_dir = _get_project_dir(ctx)
+    if project_dir:
+        os.makedirs(project_dir, exist_ok=True)
+        checkpoint_path = os.path.join(project_dir, "last-analyze.json")
+        with open(checkpoint_path, "w") as f:
+            json.dump(checkpoint, f, indent=2)
+        click.echo(f"Analyze checkpoint saved to {checkpoint_path}", err=True)
+
+    # Final report
+    click.echo("\n=== Analysis complete ===\n", err=True)
+    click.echo(f"Beliefs: {len(pre_run_ids)} → {len(post_run_ids)} "
+               f"(+{len(post_run_ids - pre_run_ids)})", err=True)
+    remaining = pending_count(project_dir)
+    if remaining:
+        click.echo(f"Topics remaining: {remaining} (use explore --loop to continue)", err=True)
+    if errors:
+        click.echo(f"Completed with {len(errors)} warning(s):", err=True)
+        for err in errors:
+            click.echo(f"  - {err}", err=True)
+    else:
+        click.echo("All steps completed successfully.", err=True)
+
+
 # --- install-skill ---
 
 
