@@ -215,7 +215,7 @@ def list_source_files(repo_path: str) -> list[str]:
         ext = os.path.splitext(line)[1].lower()
         if ext not in BINARY_EXTENSIONS:
             files.append(line)
-    files.sort(key=lambda p: (p.count(os.sep), p))
+    files.sort(key=lambda p: (p.count("/"), p))
     return files
 
 
