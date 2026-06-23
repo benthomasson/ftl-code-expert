@@ -4294,6 +4294,8 @@ def analyze(ctx, repo_path, domain, limit, do_file_issues):
     errors = []
     started = datetime.now().isoformat(timespec="seconds")
 
+    ctx.obj["repo"] = os.path.abspath(repo_path)
+
     # Step 1: init
     click.echo("\n=== Step 1: Init ===\n", err=True)
     try:
