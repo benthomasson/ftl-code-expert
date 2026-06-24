@@ -4051,16 +4051,17 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
     # Stamp verified_at on confirmed beliefs
     if confirmed and _has_reasons() and Path("reasons.db").exists():
         try:
-            from reasons_lib.api import _with_network
-            with _with_network("reasons.db", write=True) as net:
-                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                stamped = 0
-                for bid in confirmed:
-                    if bid in net.nodes:
-                        net.nodes[bid].verified_at = now
-                        stamped += 1
-                if stamped:
-                    click.echo(f"Stamped verified_at on {stamped} belief(s)", err=True)
+            from reasons_lib.api import set_metadata
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            stamped = 0
+            for bid in confirmed:
+                try:
+                    set_metadata(bid, "verified_at", now)
+                    stamped += 1
+                except KeyError:
+                    pass
+            if stamped:
+                click.echo(f"Stamped verified_at on {stamped} belief(s)", err=True)
         except Exception as e:
             click.echo(f"  Could not stamp verified_at: {e}", err=True)
 
