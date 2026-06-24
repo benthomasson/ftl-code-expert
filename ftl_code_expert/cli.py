@@ -4048,13 +4048,29 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
     click.echo(f"\nResults: {len(confirmed)} confirmed, {len(stale)} stale, "
                f"{len(inconclusive)} inconclusive", err=True)
 
-    # List referenced source files from belief metadata
+    # List referenced source files from belief metadata (walk justification chain)
     referenced_files = set()
-    for belief in beliefs:
-        node = nodes.get(belief["id"], {})
+    visited = set()
+
+    def _collect_source_files(nid):
+        if nid in visited:
+            return
+        visited.add(nid)
+        node = nodes.get(nid, {})
         src = (node.get("metadata") or {}).get("source_file")
         if src:
             referenced_files.add(src)
+        else:
+            src = _extract_source_file(node.get("source", ""), project_dir)
+            if src:
+                referenced_files.add(src)
+        for j in node.get("justifications", []):
+            for ant in j.get("antecedents", []):
+                _collect_source_files(ant)
+
+    for belief in beliefs:
+        _collect_source_files(belief["id"])
+
     if referenced_files:
         click.echo(f"\nFiles referenced ({len(referenced_files)}):", err=True)
         for f in sorted(referenced_files):
