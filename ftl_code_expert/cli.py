@@ -4048,6 +4048,18 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
     click.echo(f"\nResults: {len(confirmed)} confirmed, {len(stale)} stale, "
                f"{len(inconclusive)} inconclusive", err=True)
 
+    # List referenced source files from belief metadata
+    referenced_files = set()
+    for belief in beliefs:
+        node = nodes.get(belief["id"], {})
+        src = (node.get("metadata") or {}).get("source_file")
+        if src:
+            referenced_files.add(src)
+    if referenced_files:
+        click.echo(f"\nFiles referenced ({len(referenced_files)}):", err=True)
+        for f in sorted(referenced_files):
+            click.echo(f"  {f}", err=True)
+
     # Stamp verified_at on confirmed beliefs
     if confirmed and _has_reasons() and Path("reasons.db").exists():
         try:
