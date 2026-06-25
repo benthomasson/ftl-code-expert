@@ -34,6 +34,7 @@ from .prompts import (
     PROPOSE_BELIEFS_CODE,
     RESEARCH_INFER_FILES_PROMPT,
     REVIEW_PROMPT,
+    VERIFY_INFER_FILE_PROMPT,
     VERIFY_OBSERVE_PROMPT,
     VERIFY_PROMPT,
     build_diff_prompt,
@@ -3146,6 +3147,36 @@ async def _verify_belief_with_observations(
         belief, node, repo_path, project_dir,
     )
 
+    tree = get_repo_structure(repo_path, max_depth=3)
+
+    if src_file is None:
+        try:
+            infer_prompt = VERIFY_INFER_FILE_PROMPT.format(
+                belief_id=bid,
+                belief_text=belief["text"],
+                repo_tree=tree,
+            )
+            infer_response = await invoke(infer_prompt, model, timeout=timeout)
+            inferred = _parse_inferred_files(infer_response)
+            if inferred:
+                candidate = inferred[0]
+                if not os.path.isabs(candidate) and ".." not in candidate.split("/"):
+                    abs_candidate = os.path.join(repo_path, candidate)
+                    if os.path.isfile(abs_candidate):
+                        src_file = candidate
+                        from .observations import read_file
+                        file_result = await read_file(src_file, repo_path, max_lines=500)
+                        auto_obs[f"source_file:{src_file}"] = file_result
+                        click.echo(f"  Inferred source file for {bid}: {src_file}", err=True)
+                        if _has_reasons() and Path("reasons.db").exists():
+                            try:
+                                from reasons_lib.api import set_metadata
+                                set_metadata(bid, "source_file", src_file)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
     seed_context = ""
     source_key = f"source_file:{src_file}" if src_file else None
     if source_key and source_key in auto_obs:
@@ -3155,8 +3186,6 @@ async def _verify_belief_with_observations(
             if len(content) > 4000:
                 content = content[:4000] + "\n... (truncated)"
             seed_context = f"### {src_file}\n```\n{content}\n```"
-
-    tree = get_repo_structure(repo_path, max_depth=2)
     observe_prompt = VERIFY_OBSERVE_PROMPT.format(
         belief_id=bid,
         belief_text=belief["text"],
@@ -4110,6 +4139,134 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
         click.echo("Network updated.", err=True)
     elif retract and stale:
         click.echo("\nCannot retract: reasons CLI not available.", err=True)
+
+
+# --- infer-sources ---
+
+
+@cli.command("infer-sources")
+@click.argument("belief_ids", nargs=-1)
+@click.option("--all", "infer_all", is_flag=True, default=False,
+              help="Infer source files for all IN beliefs missing source_file")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be inferred without calling LLM")
+@click.pass_context
+def infer_sources(ctx, belief_ids, infer_all, dry_run):
+    """Infer source files for beliefs that lack source_file metadata.
+
+    Uses an LLM to identify which source file a belief refers to based on
+    the belief text and repository structure, then stamps source_file metadata
+    so verify can find the relevant code.
+
+    Examples:
+        code-expert infer-sources my-belief-id
+        code-expert infer-sources --all --dry-run
+        code-expert infer-sources --all
+    """
+    model = ctx.obj["model"]
+    timeout = ctx.obj["timeout"]
+    parallel = ctx.obj["parallel"]
+    repo_path = _get_repo(ctx)
+    abs_repo = os.path.abspath(repo_path)
+
+    if not check_model_available(model):
+        click.echo(f"Error: Model '{model}' CLI not available", err=True)
+        sys.exit(1)
+
+    if not _has_reasons() or not Path("reasons.db").exists():
+        click.echo("Error: reasons.db not found", err=True)
+        sys.exit(1)
+
+    _reasons_export()
+
+    try:
+        network = _load_network()
+        nodes = network.get("nodes", {})
+    except Exception as e:
+        click.echo(f"Error loading belief network: {e}", err=True)
+        sys.exit(1)
+
+    candidates = []
+    if belief_ids:
+        for bid in belief_ids:
+            node = nodes.get(bid)
+            if not node:
+                click.echo(f"  Belief not found: {bid}", err=True)
+                continue
+            src = (node.get("metadata") or {}).get("source_file")
+            if src:
+                click.echo(f"  {bid}: already has source_file={src}", err=True)
+                continue
+            candidates.append({"id": bid, "text": node.get("text", "")})
+    elif infer_all:
+        for nid, node in nodes.items():
+            if node.get("truth_value") != "IN":
+                continue
+            src = (node.get("metadata") or {}).get("source_file")
+            if src:
+                continue
+            src = _extract_source_file(node.get("source", ""), _get_project_dir(ctx))
+            if src:
+                continue
+            candidates.append({"id": nid, "text": node.get("text", "")})
+    else:
+        click.echo("Specify belief IDs, or use --all.", err=True)
+        sys.exit(1)
+
+    if not candidates:
+        click.echo("No beliefs need source file inference.")
+        return
+
+    click.echo(f"Found {len(candidates)} belief(s) needing source file inference", err=True)
+
+    if dry_run:
+        for c in candidates:
+            click.echo(f"  {c['id']}: {c['text'][:100]}", err=True)
+        click.echo(f"\n--dry-run: stopping before LLM inference.", err=True)
+        return
+
+    tree = get_repo_structure(abs_repo, max_depth=3)
+    prompts = [
+        VERIFY_INFER_FILE_PROMPT.format(
+            belief_id=c["id"],
+            belief_text=c["text"],
+            repo_tree=tree,
+        )
+        for c in candidates
+    ]
+
+    click.echo(f"Inferring source files with {model}...", err=True)
+    results = invoke_concurrent_sync(prompts, model=model, timeout=timeout, max_concurrent=parallel)
+
+    from reasons_lib.api import set_metadata
+    stamped = 0
+    for i, result in enumerate(results):
+        bid = candidates[i]["id"]
+        if isinstance(result, Exception):
+            click.echo(f"  {bid}: error — {result}", err=True)
+            continue
+        inferred = _parse_inferred_files(result)
+        if not inferred:
+            click.echo(f"  {bid}: no file inferred", err=True)
+            continue
+        candidate = inferred[0]
+        if os.path.isabs(candidate) or ".." in candidate.split("/"):
+            click.echo(f"  {bid}: unsafe path {candidate}", err=True)
+            continue
+        abs_path = os.path.join(abs_repo, candidate)
+        if not os.path.isfile(abs_path):
+            click.echo(f"  {bid}: {candidate} not found", err=True)
+            continue
+        try:
+            set_metadata(bid, "source_file", candidate)
+            stamped += 1
+            click.echo(f"  {bid}: {candidate}", err=True)
+        except Exception as e:
+            click.echo(f"  {bid}: failed to stamp — {e}", err=True)
+
+    click.echo(f"\nInferred source_file for {stamped}/{len(candidates)} belief(s)", err=True)
+    if stamped:
+        _reasons_export()
 
 
 # --- update ---

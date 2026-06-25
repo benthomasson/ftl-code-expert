@@ -83,3 +83,34 @@ Example:
 ## Beliefs to Verify
 
 {beliefs}"""
+
+
+VERIFY_INFER_FILE_PROMPT = """\
+You are identifying which source file a belief about a codebase refers to.
+
+## Belief
+
+**ID:** {belief_id}
+
+**Claim:** {belief_text}
+
+## Repository structure
+
+```
+{repo_tree}
+```
+
+## Instructions
+
+Based on the belief ID and claim text, identify the single source file in the repository \
+that this belief is primarily about. The file must exist in the repository structure above.
+
+Output a JSON array with exactly one file path relative to the repository root.
+
+Example output:
+```json
+["src/auth/handler.py"]
+```
+
+Output ONLY the JSON array, nothing else.
+"""
