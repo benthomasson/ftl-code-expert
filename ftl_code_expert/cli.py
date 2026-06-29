@@ -1694,6 +1694,12 @@ def _accept_proposals(matches: list[tuple[str, str, str]]) -> tuple[int, int, in
             if result.returncode == 0:
                 click.echo(f"  Added: {belief_id}")
                 added += 1
+                now = datetime.now().isoformat(timespec="seconds")
+                subprocess.run(
+                    ["reasons", "set-metadata", belief_id,
+                     "accepted_at", now],
+                    capture_output=True, text=True,
+                )
                 src_file = _extract_source_file(source.strip())
                 if src_file:
                     subprocess.run(
