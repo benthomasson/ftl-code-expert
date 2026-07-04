@@ -1,10 +1,16 @@
 """Git utilities for code explanation."""
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .language import LanguageProfile
 
 
 def get_diff(
@@ -309,112 +315,66 @@ def get_commit_log(
     return result.stdout
 
 
-def get_imports(file_path: str, repo_path: str) -> dict:
+def get_imports(file_path: str, repo_path: str, lang: LanguageProfile | None = None) -> dict:
     """
-    Analyze imports for a Python file.
+    Analyze imports for a source file.
 
     Returns dict with:
         - imports: list of modules this file imports
         - imported_by: list of files that import this file
     """
+    from .language import PYTHON
+
+    lang = lang or PYTHON
+
     content = get_file_content(file_path)
     if content is None:
         return {"imports": [], "imported_by": []}
 
-    # Parse imports from this file
     imports = []
     for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("import ") or line.startswith("from "):
-            imports.append(line)
+        if lang.matches_import(line):
+            imports.append(line.strip())
 
-    # Find files that import this module
     rel_path = os.path.relpath(file_path, repo_path)
-    module_name = rel_path.replace("/", ".").replace(".py", "").replace(".__init__", "")
-    # Also try the simple filename
+    module_name = lang.module_name_from_path(rel_path)
     simple_name = Path(file_path).stem
 
     imported_by = []
     root = Path(repo_path)
-    for py_file in root.rglob("*.py"):
-        if str(py_file) == file_path:
-            continue
-        try:
-            py_content = py_file.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, PermissionError):
-            continue
-        for line in py_content.split("\n"):
-            line = line.strip()
-            if (line.startswith("import ") or line.startswith("from ")) and (
-                module_name in line or simple_name in line
-            ):
-                imported_by.append(str(py_file.relative_to(root)))
-                break
+    for glob_pattern in lang.source_globs:
+        for src_file in root.rglob(glob_pattern):
+            if str(src_file) == file_path:
+                continue
+            try:
+                src_content = src_file.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            for src_line in src_content.split("\n"):
+                if lang.matches_import(src_line) and (
+                    module_name in src_line or simple_name in src_line
+                ):
+                    imported_by.append(str(src_file.relative_to(root)))
+                    break
 
     return {"imports": imports, "imported_by": imported_by}
 
 
-def extract_symbol(file_path: str, symbol: str) -> str | None:
+def extract_symbol(file_path: str, symbol: str, lang: LanguageProfile | None = None) -> str | None:
     """
     Extract a function or class definition from a file.
 
     Args:
         file_path: Path to the file
         symbol: Name of the function or class
+        lang: Language profile (defaults to Python)
 
     Returns:
         Source code of the symbol, or None if not found
     """
-    content = get_file_content(file_path)
-    if content is None:
-        return None
+    from .language import extract_symbol_with_profile
 
-    lines = content.split("\n")
-    result_lines = []
-    capturing = False
-    base_indent = None
-
-    for line in lines:
-        stripped = line.lstrip()
-
-        # Check for function/class definition
-        if not capturing:
-            if (
-                stripped.startswith(f"def {symbol}(")
-                or stripped.startswith(f"def {symbol} (")
-                or stripped.startswith(f"class {symbol}(")
-                or stripped.startswith(f"class {symbol}:")
-                or stripped.startswith(f"class {symbol} (")
-                or stripped.startswith(f"async def {symbol}(")
-                or stripped.startswith(f"async def {symbol} (")
-            ):
-                capturing = True
-                base_indent = len(line) - len(stripped)
-                # Include decorator lines above
-                while result_lines and result_lines[-1].strip().startswith("@"):
-                    pass  # already captured
-                result_lines.append(line)
-                continue
-
-        if capturing:
-            # Empty lines are part of the definition
-            if not stripped:
-                result_lines.append(line)
-                continue
-
-            current_indent = len(line) - len(stripped)
-
-            # If we hit something at same or lesser indent, we're done
-            # (unless it's a decorator for a nested definition)
-            if current_indent <= base_indent and stripped and not stripped.startswith("#"):
-                break
-
-            result_lines.append(line)
-
-    if not result_lines:
-        return None
-
-    return "\n".join(result_lines)
+    return extract_symbol_with_profile(file_path, symbol, lang)
 
 
 def list_commits_with_files(
@@ -476,7 +436,9 @@ def list_commits_with_files(
     return commits
 
 
-def find_related_tests(file_path: str, repo_path: str, symbol: str | None = None) -> list[str]:
+def find_related_tests(
+    file_path: str, repo_path: str, symbol: str | None = None, lang: LanguageProfile | None = None,
+) -> list[str]:
     """
     Find test files related to a source file or symbol.
 
@@ -484,35 +446,38 @@ def find_related_tests(file_path: str, repo_path: str, symbol: str | None = None
         file_path: Source file path
         repo_path: Repository root
         symbol: Optional symbol name to search for
+        lang: Language profile (defaults to Python)
 
     Returns:
         List of related test file paths (relative to repo)
     """
+    from .language import PYTHON
+
+    lang = lang or PYTHON
+
     root = Path(repo_path)
     source_name = Path(file_path).stem
-    related = []
+    related: list[str] = []
+    seen: set[str] = set()
 
-    for test_file in root.rglob("test_*.py"):
-        rel = str(test_file.relative_to(root))
-        # Check if test file name matches source file
-        if source_name in test_file.name:
-            related.append(rel)
-            continue
-
-        # If symbol provided, check if test file references it
-        if symbol:
-            try:
-                content = test_file.read_text(encoding="utf-8")
-                if symbol in content:
-                    related.append(rel)
-            except (UnicodeDecodeError, PermissionError):
+    for glob_pattern in lang.test_globs:
+        for test_file in root.rglob(glob_pattern):
+            rel = str(test_file.relative_to(root))
+            if rel in seen:
                 continue
 
-    # Also check tests/ directory for *_test.py pattern
-    for test_file in root.rglob("*_test.py"):
-        rel = str(test_file.relative_to(root))
-        if rel not in related:
             if source_name in test_file.name:
                 related.append(rel)
+                seen.add(rel)
+                continue
+
+            if symbol:
+                try:
+                    content = test_file.read_text(encoding="utf-8")
+                    if symbol in content:
+                        related.append(rel)
+                        seen.add(rel)
+                except (UnicodeDecodeError, PermissionError):
+                    continue
 
     return related

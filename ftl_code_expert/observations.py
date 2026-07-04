@@ -13,25 +13,32 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .language import LanguageProfile
 
 
-async def grep(pattern: str, repo_path: str, glob: str = "*.py", max_results: int = 30) -> dict[str, Any]:
+async def grep(
+    pattern: str, repo_path: str, glob: str | list[str] = "*.py", max_results: int = 30,
+) -> dict[str, Any]:
     """
     Search for a pattern in the codebase.
 
     Args:
         pattern: Regex pattern to search for
         repo_path: Repository path
-        glob: File glob pattern (default: *.py)
+        glob: File glob pattern(s) (default: *.py)
         max_results: Maximum number of results
 
     Returns:
         Dict with matching files and lines
     """
     try:
+        globs = [glob] if isinstance(glob, str) else glob
+        include_args = [f"--include={g}" for g in globs]
         proc = await asyncio.create_subprocess_exec(
-            "grep", "-Ern", f"--include={glob}", pattern, repo_path,
+            "grep", "-Ern", *include_args, pattern, repo_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -148,28 +155,32 @@ async def list_directory(dir_path: str, repo_path: str, max_depth: int = 2) -> d
         return {"error": str(e), "dir": dir_path}
 
 
-async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:
+async def find_symbol(
+    symbol: str, repo_path: str, lang: LanguageProfile | None = None,
+) -> dict[str, Any]:
     """
     Find where a symbol (class, function, variable) is defined.
 
     Args:
         symbol: Symbol name to find
         repo_path: Repository path
+        lang: Language profile (defaults to Python)
 
     Returns:
         Dict with definition locations
     """
+    from .language import PYTHON, get_grep_include_args
+
+    lang = lang or PYTHON
+
     try:
-        # Search for definitions
-        patterns = [
-            f"^(class|def|async def) {symbol}[(:  ]",
-            f"^{symbol}\\s*=",
-        ]
+        patterns = [p.format(symbol=symbol) for p in lang.definition_patterns]
+        include_args = get_grep_include_args(lang)
 
         definitions = []
         for pattern in patterns:
             proc = await asyncio.create_subprocess_exec(
-                "grep", "-Ern", "--include=*.py", pattern, repo_path,
+                "grep", "-Ern", *include_args, pattern, repo_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -198,20 +209,28 @@ async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:
         return {"error": str(e), "symbol": symbol}
 
 
-async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:
+async def find_usages(
+    symbol: str, repo_path: str, lang: LanguageProfile | None = None,
+) -> dict[str, Any]:
     """
     Find where a symbol is used (imported, called, referenced).
 
     Args:
         symbol: Symbol to search for
         repo_path: Repository path
+        lang: Language profile (defaults to Python)
 
     Returns:
         Dict with usage locations
     """
+    from .language import PYTHON, get_grep_include_args
+
+    lang = lang or PYTHON
+    include_args = get_grep_include_args(lang)
+
     try:
         proc = await asyncio.create_subprocess_exec(
-            "grep", "-Frn", "--include=*.py", symbol, repo_path,
+            "grep", "-Frn", *include_args, symbol, repo_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -241,41 +260,59 @@ async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:
         return {"error": str(e), "symbol": symbol}
 
 
-async def file_imports(file_path: str, repo_path: str) -> dict[str, Any]:
+async def file_imports(
+    file_path: str, repo_path: str, lang: LanguageProfile | None = None,
+) -> dict[str, Any]:
     """
     Extract import statements from a file.
 
     Args:
         file_path: Path to the file (relative to repo)
         repo_path: Repository root
+        lang: Language profile (defaults to Python)
 
     Returns:
         Dict with imports
     """
-    import ast
+    from .language import PYTHON
+
+    lang = lang or PYTHON
 
     try:
         full_path = Path(repo_path) / file_path
         source = full_path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
 
-        imports = []
-        from_imports = []
+        if lang.name == "python":
+            import ast
 
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append(alias.name)
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                names = [alias.name for alias in node.names]
-                from_imports.append({"module": module, "names": names})
+            tree = ast.parse(source)
+            imports = []
+            from_imports = []
 
-        return {
-            "file": file_path,
-            "imports": imports,
-            "from_imports": from_imports,
-        }
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        imports.append(alias.name)
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    names = [alias.name for alias in node.names]
+                    from_imports.append({"module": module, "names": names})
+
+            return {
+                "file": file_path,
+                "imports": imports,
+                "from_imports": from_imports,
+            }
+        else:
+            imports = []
+            for line in source.split("\n"):
+                if lang.matches_import(line):
+                    imports.append(line.strip())
+            return {
+                "file": file_path,
+                "imports": imports,
+                "from_imports": [],
+            }
     except Exception as e:
         return {"error": str(e), "file": file_path}
 
