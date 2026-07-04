@@ -80,9 +80,35 @@ CPP = LanguageProfile(
     decorator_prefix=None,
 )
 
+RUST = LanguageProfile(
+    name="rust",
+    source_globs=["*.rs"],
+    source_extensions=[".rs"],
+    fence_language="rust",
+    definition_patterns=[
+        r"^pub(\s*\(crate\))?\s*(async\s+)?fn\s+{symbol}\b",
+        r"^(async\s+)?fn\s+{symbol}\b",
+        r"^pub(\s*\(crate\))?\s*(struct|enum|trait|type|const|static|mod)\s+{symbol}\b",
+        r"^(struct|enum|trait|type|const|static|mod)\s+{symbol}\b",
+        r"^impl(<.*>)?\s+{symbol}\b",
+        r"^macro_rules!\s+{symbol}\b",
+    ],
+    import_line_prefixes=["use ", "mod "],
+    scope_style="brace",
+    test_globs=["*_test.rs", "test_*.rs"],
+    entry_point_candidates=[
+        "src/main.rs", "src/lib.rs",
+    ],
+    config_files=["Cargo.toml"],
+    primary_extension=".rs",
+    config_entry_point_marker="[[bin]]",
+    decorator_prefix="#[",
+)
+
 LANGUAGE_REGISTRY: dict[str, LanguageProfile] = {
     "python": PYTHON,
     "cpp": CPP,
+    "rust": RUST,
 }
 
 _CONFIG_TO_LANGUAGE: dict[str, str] = {
