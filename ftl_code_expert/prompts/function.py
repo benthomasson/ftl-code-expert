@@ -9,6 +9,7 @@ def build_function_prompt(
     symbol_source: str,
     full_file_content: str | None = None,
     related_tests: list[str] | None = None,
+    language: str = "python",
 ) -> str:
     """
     Build prompt for explaining a specific function or class.
@@ -19,6 +20,7 @@ def build_function_prompt(
         symbol_source: Extracted source code of the symbol
         full_file_content: Full file for additional context
         related_tests: Paths to related test files
+        language: Language for code fence syntax highlighting
     """
     sections = [
         "You are a senior software engineer explaining code to a colleague.",
@@ -26,7 +28,7 @@ def build_function_prompt(
         "",
         "## Source Code",
         "",
-        "```python",
+        f"```{language}",
         symbol_source,
         "```",
         "",
@@ -38,7 +40,7 @@ def build_function_prompt(
             "",
             f"The symbol is defined in `{file_path}`. Here is the full file for context:",
             "",
-            "```python",
+            f"```{language}",
             full_file_content,
             "```",
             "",

@@ -21,7 +21,7 @@ Do NOT answer the question yet. Only request observations.
 
 | Tool | Purpose | Params |
 |------|---------|--------|
-| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
+| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: {default_glob}) |
 | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
 | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
 | `find_symbol` | Find where a class/function is defined | `symbol` |
@@ -50,6 +50,6 @@ Now output your observation requests as JSON:
 """
 
 
-def build_observe_prompt(question: str, tree: str) -> str:
+def build_observe_prompt(question: str, tree: str, default_glob: str = "*.py") -> str:
     """Build the observation-gathering prompt."""
-    return OBSERVE_PROMPT.format(question=question, tree=tree)
+    return OBSERVE_PROMPT.format(question=question, tree=tree, default_glob=default_glob)

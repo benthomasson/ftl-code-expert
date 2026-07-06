@@ -1,5 +1,7 @@
 """Command-line interface for code expert."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -12,6 +14,7 @@ from pathlib import Path
 
 import click
 
+from .language import detect_language, PYTHON
 from .git_utils import (
     commits_since_checkpoint,
     extract_symbol,
@@ -87,6 +90,13 @@ def _get_repo(ctx) -> str:
 def _get_project_dir(ctx) -> str:
     """Resolve .code-expert directory relative to repo root."""
     return os.path.join(_get_repo(ctx), PROJECT_DIR)
+
+
+def _get_lang(ctx):
+    """Lazily detect and cache the repo's primary language."""
+    if "lang" not in ctx.obj or ctx.obj["lang"] is None:
+        ctx.obj["lang"] = detect_language(_get_repo(ctx))
+    return ctx.obj["lang"]
 
 
 # --- Output helpers ---
@@ -203,28 +213,33 @@ def _find_project_config(repo_path: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _find_entry_points(repo_path: str, config_content: str | None) -> list[str]:
+def _find_entry_points(repo_path: str, config_content: str | None, lang=None) -> list[str]:
     """Identify likely entry points from config and convention."""
+    lang = lang or PYTHON
     entry_points = []
-    candidates = [
-        "src/main.py", "main.py", "app.py", "src/app.py",
-        "manage.py", "setup.py", "cli.py",
-    ]
-    for candidate in candidates:
+    for candidate in lang.entry_point_candidates:
         if os.path.isfile(os.path.join(repo_path, candidate)):
             entry_points.append(candidate)
 
-    if config_content and "[project.scripts]" in config_content:
-        in_scripts = False
+    marker = lang.config_entry_point_marker
+    if config_content and marker and marker in config_content:
+        in_section = False
         for line in config_content.split("\n"):
-            if "[project.scripts]" in line:
-                in_scripts = True
+            if marker in line:
+                in_section = True
                 continue
-            if in_scripts:
+            if in_section:
                 if line.startswith("["):
-                    break
+                    in_section = False
+                    continue
                 if "=" in line:
-                    entry_points.append(line.strip())
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key == "path" and value:
+                        entry_points.append(value)
+                    elif key != "path" and key != "name":
+                        entry_points.append(line.strip())
 
     return entry_points
 
@@ -344,10 +359,11 @@ def scan(ctx):
 
     click.echo(f"Scanning {repo_path}...", err=True)
 
+    lang = _get_lang(ctx)
     tree = get_repo_structure(repo_path, max_depth=3)
     _, config_content = _find_project_config(repo_path)
     readme_content = get_file_content(os.path.join(repo_path, "README.md"))
-    entry_points = _find_entry_points(repo_path, config_content)
+    entry_points = _find_entry_points(repo_path, config_content, lang=lang)
 
     prompt = build_scan_prompt(
         tree=tree,
@@ -427,7 +443,8 @@ def explain_file(ctx, file_path):
     click.echo(f"Explaining {file_path}...", err=True)
 
     rel_path = os.path.relpath(abs_path, os.path.abspath(repo_path))
-    import_info = get_imports(abs_path, os.path.abspath(repo_path))
+    lang = _get_lang(ctx)
+    import_info = get_imports(abs_path, os.path.abspath(repo_path), lang=lang)
     repo_tree = get_repo_structure(os.path.abspath(repo_path), max_depth=2)
 
     prompt = build_file_prompt(
@@ -478,8 +495,9 @@ def explain_function(ctx, target):
 
     abs_path = os.path.abspath(file_path)
     abs_repo = os.path.abspath(repo_path)
+    lang = _get_lang(ctx)
 
-    symbol_source = extract_symbol(abs_path, symbol_name)
+    symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)
     if symbol_source is None:
         click.echo(f"Error: Symbol '{symbol_name}' not found in {file_path}", err=True)
         sys.exit(1)
@@ -487,7 +505,7 @@ def explain_function(ctx, target):
     click.echo(f"Explaining {symbol_name} from {file_path}...", err=True)
 
     full_content = get_file_content(abs_path)
-    related_tests = find_related_tests(abs_path, abs_repo, symbol_name)
+    related_tests = find_related_tests(abs_path, abs_repo, symbol_name, lang=lang)
     rel_path = os.path.relpath(abs_path, abs_repo)
 
     prompt = build_function_prompt(
@@ -496,6 +514,7 @@ def explain_function(ctx, target):
         symbol_source=symbol_source,
         full_file_content=full_content,
         related_tests=related_tests or None,
+        language=lang.fence_language,
     )
 
     click.echo(f"Running {model}...", err=True)
@@ -541,7 +560,8 @@ def explain_repo(ctx, repo_path):
             readme_content = get_file_content(os.path.join(abs_repo, alt))
             if readme_content is not None:
                 break
-    entry_points = _find_entry_points(abs_repo, config_content)
+    lang = _get_lang(ctx)
+    entry_points = _find_entry_points(abs_repo, config_content, lang=lang)
 
     prompt = build_repo_prompt(
         tree=tree,
@@ -891,14 +911,15 @@ def _explore_loop(ctx, project_dir, max_topics):
     click.echo(f"\nExplored {explored} topic(s). {remaining} remaining in queue.", err=True)
 
 
-def _prepare_file_topic(topic, repo_path):
+def _prepare_file_topic(topic, repo_path, lang=None):
     """Prepare prompt for a file topic. Returns (prompt, entry_name, entry_title, source) or None."""
+    lang = lang or PYTHON
     file_path = topic.target
     abs_path = os.path.join(repo_path, file_path) if not os.path.isabs(file_path) else file_path
 
     if os.path.isdir(abs_path):
         topic.kind = "repo"
-        return _prepare_repo_topic(topic, repo_path)
+        return _prepare_repo_topic(topic, repo_path, lang=lang)
 
     if not os.path.isfile(abs_path):
         click.echo(f"File not found: {file_path} (skipping)", err=True)
@@ -910,7 +931,7 @@ def _prepare_file_topic(topic, repo_path):
         return None
 
     rel_path = os.path.relpath(abs_path, repo_path)
-    import_info = get_imports(abs_path, repo_path)
+    import_info = get_imports(abs_path, repo_path, lang=lang)
     repo_tree = get_repo_structure(repo_path, max_depth=2)
 
     prompt = build_file_prompt(
@@ -925,8 +946,9 @@ def _prepare_file_topic(topic, repo_path):
     return prompt, entry_name, f"File: {rel_path}", f"file:{rel_path}"
 
 
-def _prepare_function_topic(topic, repo_path):
+def _prepare_function_topic(topic, repo_path, lang=None):
     """Prepare prompt for a function topic. Returns (prompt, entry_name, entry_title, source) or None."""
+    lang = lang or PYTHON
     if ":" not in topic.target:
         click.echo(f"Function topic must be file:symbol, got: {topic.target}", err=True)
         return None
@@ -938,13 +960,13 @@ def _prepare_function_topic(topic, repo_path):
         click.echo(f"File not found: {file_path} (skipping)", err=True)
         return None
 
-    symbol_source = extract_symbol(abs_path, symbol_name)
+    symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)
     if symbol_source is None:
         click.echo(f"Symbol '{symbol_name}' not found in {file_path} (skipping)", err=True)
         return None
 
     full_content = get_file_content(abs_path)
-    related_tests = find_related_tests(abs_path, repo_path, symbol_name)
+    related_tests = find_related_tests(abs_path, repo_path, symbol_name, lang=lang)
     rel_path = os.path.relpath(abs_path, repo_path)
 
     prompt = build_function_prompt(
@@ -953,14 +975,16 @@ def _prepare_function_topic(topic, repo_path):
         symbol_source=symbol_source,
         full_file_content=full_content,
         related_tests=related_tests or None,
+        language=lang.fence_language,
     )
 
     entry_name = _sanitize_path_for_filename(rel_path) + f"-{symbol_name}"
     return prompt, entry_name, f"Function: {symbol_name} in {rel_path}", f"function:{rel_path}:{symbol_name}"
 
 
-def _prepare_repo_topic(topic, repo_path):
+def _prepare_repo_topic(topic, repo_path, lang=None):
     """Prepare prompt for a repo topic. Returns (prompt, entry_name, entry_title, source) or None."""
+    lang = lang or PYTHON
     target_path = os.path.join(repo_path, topic.target) if topic.target != "." else repo_path
     if not os.path.isdir(target_path):
         target_path = repo_path
@@ -968,7 +992,7 @@ def _prepare_repo_topic(topic, repo_path):
     tree = get_repo_structure(target_path)
     _, config_content = _find_project_config(target_path)
     readme_content = get_file_content(os.path.join(target_path, "README.md"))
-    entry_points = _find_entry_points(target_path, config_content)
+    entry_points = _find_entry_points(target_path, config_content, lang=lang)
 
     prompt = build_repo_prompt(
         tree=tree,
@@ -980,7 +1004,7 @@ def _prepare_repo_topic(topic, repo_path):
     return prompt, "repo-overview", "Repo Overview", "repo-overview"
 
 
-def _prepare_diff_topic(topic, repo_path):
+def _prepare_diff_topic(topic, repo_path, lang=None):
     """Prepare prompt for a diff topic. Returns (prompt, entry_name, entry_title, source) or None."""
     try:
         diff_content = get_diff(topic.target, cwd=repo_path)
@@ -1029,7 +1053,8 @@ _PREPARE_DISPATCH = {
 
 def _run_file_topic(ctx, topic, model, repo_path):
     """Handle a file exploration topic."""
-    prepared = _prepare_file_topic(topic, repo_path)
+    lang = _get_lang(ctx)
+    prepared = _prepare_file_topic(topic, repo_path, lang=lang)
     if prepared is None:
         return
     prompt, entry_name, entry_title, source = prepared
@@ -1044,7 +1069,8 @@ def _run_file_topic(ctx, topic, model, repo_path):
 
 def _run_function_topic(ctx, topic, model, repo_path):
     """Handle a function exploration topic."""
-    prepared = _prepare_function_topic(topic, repo_path)
+    lang = _get_lang(ctx)
+    prepared = _prepare_function_topic(topic, repo_path, lang=lang)
     if prepared is None:
         return
     prompt, entry_name, entry_title, source = prepared
@@ -1059,7 +1085,8 @@ def _run_function_topic(ctx, topic, model, repo_path):
 
 def _run_repo_topic(ctx, topic, model, repo_path):
     """Handle a repo exploration topic."""
-    prepared = _prepare_repo_topic(topic, repo_path)
+    lang = _get_lang(ctx)
+    prepared = _prepare_repo_topic(topic, repo_path, lang=lang)
     if prepared is None:
         return
     prompt, entry_name, entry_title, source = prepared
@@ -1091,8 +1118,11 @@ async def _run_general_topic_async(topic, model, repo_path, timeout):
     """Run a general topic's full observe-then-explain pipeline asynchronously."""
     from .prompts.common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS
 
+    lang = detect_language(repo_path)
     tree = get_repo_structure(repo_path, max_depth=2)
-    observe_prompt = build_observe_prompt(question=topic.title, tree=tree)
+    observe_prompt = build_observe_prompt(
+        question=topic.title, tree=tree, default_glob=lang.source_globs[0],
+    )
 
     observe_response = await invoke(observe_prompt, model)
     requested_obs = parse_observation_requests(observe_response)
@@ -1151,8 +1181,9 @@ def _run_general_topic(ctx, topic, model, repo_path):
     _finalize_topic(ctx, entry_name, entry_title, source, result)
 
 
-async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent):
+async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent, lang=None):
     """Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception."""
+    lang = lang or detect_language(repo_path)
     sem = asyncio.Semaphore(max_concurrent)
 
     async def _do_topic(topic):
@@ -1168,7 +1199,7 @@ async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_conc
             if not prepare_fn:
                 raise ValueError(f"Unknown topic kind: {topic.kind}")
 
-            prepared = prepare_fn(topic, repo_path)
+            prepared = prepare_fn(topic, repo_path, lang=lang)
             if prepared is None:
                 return None
 
@@ -1182,27 +1213,27 @@ async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_conc
     )
 
 
-def _repo_path_to_entry_pattern(repo_path: str) -> str:
+def _repo_path_to_entry_pattern(repo_path: str, lang=None) -> str:
     """Convert a repo file path to the entry-name pattern used in belief sources.
 
     Example: src/redhat_agents/capabilities/dataverse/mart_proxy.py
           -> src-redhat_agents-capabilities-dataverse-mart_proxy
     """
-    # Strip .py extension
-    if repo_path.endswith(".py"):
-        repo_path = repo_path[:-3]
-    # Replace path separators with dashes
+    lang = lang or PYTHON
+    ext = lang.primary_extension
+    if repo_path.endswith(ext):
+        repo_path = repo_path[:-len(ext)]
     return repo_path.replace("/", "-").replace("\\", "-")
 
 
-def _retract_beliefs_for_deleted_files(deleted_files: set[str]) -> None:
+def _retract_beliefs_for_deleted_files(deleted_files: set[str], lang=None) -> None:
     """Find beliefs sourced from deleted files and retract them via reasons."""
     beliefs_path = Path("beliefs.md")
     if not beliefs_path.exists():
         return
 
     # Build entry-name patterns for deleted files
-    patterns = {_repo_path_to_entry_pattern(f) for f in deleted_files}
+    patterns = {_repo_path_to_entry_pattern(f, lang=lang) for f in deleted_files}
 
     # Parse beliefs and find those sourced from deleted files
     beliefs = _parse_beliefs_md(beliefs_path)
@@ -1342,7 +1373,7 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
 
     # Retract beliefs sourced from deleted files
     if deleted_files:
-        _retract_beliefs_for_deleted_files(deleted_files)
+        _retract_beliefs_for_deleted_files(deleted_files, lang=_get_lang(ctx))
 
     if not check_model_available(model):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)
@@ -2394,20 +2425,22 @@ def _gather_beliefs_for_spec(keywords: list[str]) -> list[dict]:
     return matched
 
 
-def _gather_source_files(repo_path: str, beliefs: list[dict]) -> dict[str, str]:
+def _gather_source_files(repo_path: str, beliefs: list[dict], lang=None) -> dict[str, str]:
     """Read source files referenced by beliefs."""
-    # Collect unique file paths from belief sources and IDs
+    lang = lang or PYTHON
     file_paths = set()
     for belief in beliefs:
-        # Extract paths from source entries
         source = belief.get("source", "")
         # Source format: entries/2026/03/11/src-redhat_agents-workflow-synthesizer.md
-        # Extract the implied source file: src/redhat_agents/workflow/synthesizer.py
         m = re.search(r'src[-/](.+?)\.md', source)
         if m:
-            # Convert dashes back to path separators
-            path = "src/" + m.group(1).replace("-", "/") + ".py"
-            file_paths.add(path)
+            reconstructed = "src/" + m.group(1).replace("-", "/")
+            # Check if the reconstructed path already has a valid extension
+            _, ext = os.path.splitext(reconstructed)
+            if ext in lang.source_extensions:
+                file_paths.add(reconstructed)
+            else:
+                file_paths.add(reconstructed + lang.primary_extension)
 
     # Also look for common patterns in belief IDs
     source_files = {}
@@ -2437,13 +2470,14 @@ def _format_beliefs_for_prompt(beliefs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_source_code(source_files: dict[str, str]) -> str:
+def _format_source_code(source_files: dict[str, str], lang=None) -> str:
     """Format source files into prompt-friendly text."""
+    lang = lang or PYTHON
     if not source_files:
         return "(No source files found)"
     parts = []
     for path, content in source_files.items():
-        parts.append(f"### {path}\n\n```python\n{content}\n```")
+        parts.append(f"### {path}\n\n```{lang.fence_language}\n{content}\n```")
     return "\n\n".join(parts)
 
 
@@ -2486,15 +2520,16 @@ def generate_spec(ctx, component, keywords, output, source_files, model, dry_run
     click.echo(f"Found {len(beliefs)} matching beliefs", err=True)
 
     # Gather source files
-    src_files = _gather_source_files(repo_path, beliefs)
+    lang = detect_language(repo_path)
+    src_files = _gather_source_files(repo_path, beliefs, lang=lang)
 
-    # Add explicit source files (expand directories to .py files)
+    # Add explicit source files (expand directories to source files)
     for sf in source_files:
         abs_path = os.path.join(repo_path, sf) if not os.path.isabs(sf) else sf
         if os.path.isdir(abs_path):
             for root, _, files in os.walk(abs_path):
                 for fname in sorted(files):
-                    if not fname.endswith(".py"):
+                    if not any(fname.endswith(ext) for ext in lang.source_extensions):
                         continue
                     fpath = os.path.join(root, fname)
                     content = get_file_content(fpath)
@@ -2530,7 +2565,7 @@ def generate_spec(ctx, component, keywords, output, source_files, model, dry_run
 
     # Build prompt
     beliefs_text = _format_beliefs_for_prompt(beliefs)
-    source_code = _format_source_code(src_files)
+    source_code = _format_source_code(src_files, lang=lang)
     file_list = ", ".join(sorted(src_files.keys())) if src_files else "(none)"
 
     config = _load_config()
@@ -3080,6 +3115,7 @@ async def _auto_gather_verify_observations(
     node: dict,
     repo_path: str,
     project_dir: str | None,
+    lang=None,
 ) -> tuple[str | None, dict]:
     """Auto-gather observations for a belief before LLM involvement.
 
@@ -3087,6 +3123,8 @@ async def _auto_gather_verify_observations(
     in parallel. Returns (src_file, observations_dict).
     """
     from .observations import find_usages, grep, read_file
+
+    lang = lang or detect_language(repo_path)
 
     bid = belief["id"]
     source = node.get("source", "")
@@ -3110,11 +3148,11 @@ async def _auto_gather_verify_observations(
             symbols.append(term)
 
     for sym in symbols[:2]:
-        auto_tasks.append(find_usages(sym, repo_path))
+        auto_tasks.append(find_usages(sym, repo_path, lang=lang))
         auto_names.append(f"find_usages:{sym}")
 
     if not symbols and terms:
-        auto_tasks.append(grep(terms[0], repo_path, glob="*.py", max_results=10))
+        auto_tasks.append(grep(terms[0], repo_path, glob=lang.source_globs, max_results=10))
         auto_names.append(f"grep:{terms[0]}")
 
     results = await asyncio.gather(*auto_tasks, return_exceptions=True)
@@ -3133,6 +3171,7 @@ async def _verify_belief_with_observations(
     project_dir: str | None,
     model: str,
     timeout: int,
+    lang=None,
 ) -> tuple[str, str]:
     """Gather code context for a belief using the observe pattern.
 
@@ -3141,10 +3180,11 @@ async def _verify_belief_with_observations(
     3. Execute LLM-requested observations in parallel
     4. Return combined context
     """
+    lang = lang or detect_language(repo_path)
     bid = belief["id"]
 
     src_file, auto_obs = await _auto_gather_verify_observations(
-        belief, node, repo_path, project_dir,
+        belief, node, repo_path, project_dir, lang=lang,
     )
 
     tree = get_repo_structure(repo_path, max_depth=3)
@@ -3191,6 +3231,7 @@ async def _verify_belief_with_observations(
         belief_text=belief["text"],
         seed_context=seed_context or "(no initial source file)",
         tree=tree,
+        default_glob=lang.source_globs[0],
     )
     observe_response = await invoke(observe_prompt, model, timeout=timeout)
     requested_obs = parse_observation_requests(observe_response)
