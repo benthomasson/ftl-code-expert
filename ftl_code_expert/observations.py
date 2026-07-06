@@ -174,7 +174,7 @@ async def find_symbol(
     lang = lang or PYTHON
 
     try:
-        patterns = [p.format(symbol=symbol) for p in lang.definition_patterns]
+        patterns = [p.format(symbol=re.escape(symbol)) for p in lang.definition_patterns]
         include_args = get_grep_include_args(lang)
 
         definitions = []

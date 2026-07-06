@@ -232,7 +232,13 @@ def _find_entry_points(repo_path: str, config_content: str | None, lang=None) ->
                 if line.startswith("["):
                     break
                 if "=" in line:
-                    entry_points.append(line.strip())
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    if key == "path" and value:
+                        entry_points.append(value)
+                    elif key != "path" and key != "name":
+                        entry_points.append(line.strip())
 
     return entry_points
 
@@ -1219,14 +1225,14 @@ def _repo_path_to_entry_pattern(repo_path: str, lang=None) -> str:
     return repo_path.replace("/", "-").replace("\\", "-")
 
 
-def _retract_beliefs_for_deleted_files(deleted_files: set[str]) -> None:
+def _retract_beliefs_for_deleted_files(deleted_files: set[str], lang=None) -> None:
     """Find beliefs sourced from deleted files and retract them via reasons."""
     beliefs_path = Path("beliefs.md")
     if not beliefs_path.exists():
         return
 
     # Build entry-name patterns for deleted files
-    patterns = {_repo_path_to_entry_pattern(f) for f in deleted_files}
+    patterns = {_repo_path_to_entry_pattern(f, lang=lang) for f in deleted_files}
 
     # Parse beliefs and find those sourced from deleted files
     beliefs = _parse_beliefs_md(beliefs_path)
@@ -1366,7 +1372,7 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
 
     # Retract beliefs sourced from deleted files
     if deleted_files:
-        _retract_beliefs_for_deleted_files(deleted_files)
+        _retract_beliefs_for_deleted_files(deleted_files, lang=_get_lang(ctx))
 
     if not check_model_available(model):
         click.echo(f"Error: Model '{model}' CLI not available", err=True)

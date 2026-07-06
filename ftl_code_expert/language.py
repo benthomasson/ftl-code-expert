@@ -225,7 +225,6 @@ def _extract_symbol_brace(file_path: str, symbol: str, lang: LanguageProfile) ->
     result_lines: list[str] = []
     brace_depth = 0
     found_open = False
-    in_line_comment = False
     in_block_comment = False
 
     for i in range(start_idx, len(lines)):
