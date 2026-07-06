@@ -230,7 +230,8 @@ def _find_entry_points(repo_path: str, config_content: str | None, lang=None) ->
                 continue
             if in_section:
                 if line.startswith("["):
-                    break
+                    in_section = False
+                    continue
                 if "=" in line:
                     key, _, value = line.partition("=")
                     key = key.strip()
@@ -2433,8 +2434,13 @@ def _gather_source_files(repo_path: str, beliefs: list[dict], lang=None) -> dict
         # Source format: entries/2026/03/11/src-redhat_agents-workflow-synthesizer.md
         m = re.search(r'src[-/](.+?)\.md', source)
         if m:
-            path = "src/" + m.group(1).replace("-", "/") + lang.primary_extension
-            file_paths.add(path)
+            reconstructed = "src/" + m.group(1).replace("-", "/")
+            # Check if the reconstructed path already has a valid extension
+            _, ext = os.path.splitext(reconstructed)
+            if ext in lang.source_extensions:
+                file_paths.add(reconstructed)
+            else:
+                file_paths.add(reconstructed + lang.primary_extension)
 
     # Also look for common patterns in belief IDs
     source_files = {}

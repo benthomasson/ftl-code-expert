@@ -28,10 +28,13 @@ class LanguageProfile:
         return any(stripped.startswith(p) for p in self.import_line_prefixes)
 
     def module_name_from_path(self, rel_path: str) -> str:
-        name = rel_path.replace(self.primary_extension, "")
+        if rel_path.endswith(self.primary_extension):
+            name = rel_path[:-len(self.primary_extension)]
+        else:
+            name = os.path.splitext(rel_path)[0]
         if self.name == "python":
             return name.replace("/", ".").replace(".__init__", "")
-        return os.path.splitext(os.path.basename(rel_path))[0]
+        return os.path.basename(name)
 
 
 PYTHON = LanguageProfile(
@@ -257,6 +260,9 @@ def _extract_symbol_brace(file_path: str, symbol: str, lang: LanguageProfile) ->
                     j += 1
                 j += 1
                 continue
+
+            if line[j] == ";" and not found_open:
+                return "\n".join(result_lines)
 
             if line[j] == "{":
                 brace_depth += 1
