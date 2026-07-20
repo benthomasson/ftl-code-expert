@@ -2990,7 +2990,8 @@ def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
     """Create any missing labels on the target repo."""
     if platform == "github":
         result = subprocess.run(
-            ["gh", "label", "list", "--repo", repo_slug, "--json", "name", "-q", ".[].name"],
+            ["gh", "label", "list", "--repo", repo_slug, "-L", "1000",
+             "--json", "name", "-q", ".[].name"],
             capture_output=True, text=True,
         )
         existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
@@ -3003,10 +3004,18 @@ def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
             )
     elif platform == "gitlab":
         result = subprocess.run(
-            ["glab", "label", "list", "--repo", repo_slug],
+            ["glab", "label", "list", "--repo", repo_slug, "-F", "json"],
             capture_output=True, text=True,
         )
-        existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
+        existing: set[str] = set()
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                for item in json.loads(result.stdout):
+                    name = item.get("name", "")
+                    if name:
+                        existing.add(name)
+            except (json.JSONDecodeError, TypeError):
+                pass
         for label in required - existing:
             click.echo(f"  Creating label: {label}", err=True)
             subprocess.run(
