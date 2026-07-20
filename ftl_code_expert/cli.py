@@ -2997,11 +2997,13 @@ def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
         existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
         for label in required - existing:
             click.echo(f"  Creating label: {label}", err=True)
-            subprocess.run(
+            r = subprocess.run(
                 ["gh", "label", "create", label, "--repo", repo_slug,
                  "--description", "Auto-created by code-expert file-issues"],
                 capture_output=True, text=True,
             )
+            if r.returncode != 0:
+                click.echo(f"  Failed to create label {label}: {r.stderr.strip()}", err=True)
     elif platform == "gitlab":
         result = subprocess.run(
             ["glab", "label", "list", "--repo", repo_slug, "-F", "json"],
@@ -3010,18 +3012,23 @@ def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
         existing: set[str] = set()
         if result.returncode == 0 and result.stdout.strip():
             try:
-                for item in json.loads(result.stdout):
-                    name = item.get("name", "")
-                    if name:
-                        existing.add(name)
-            except (json.JSONDecodeError, TypeError):
+                parsed = json.loads(result.stdout)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            name = item.get("name", "")
+                            if name:
+                                existing.add(name)
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 pass
         for label in required - existing:
             click.echo(f"  Creating label: {label}", err=True)
-            subprocess.run(
-                ["glab", "label", "create", label, "--repo", repo_slug],
+            r = subprocess.run(
+                ["glab", "label", "create", "--name", label, "--repo", repo_slug],
                 capture_output=True, text=True,
             )
+            if r.returncode != 0:
+                click.echo(f"  Failed to create label {label}: {r.stderr.strip()}", err=True)
 
 
 def _create_issue(platform: str, repo_slug: str, title: str, body: str,
