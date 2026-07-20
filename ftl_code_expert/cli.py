@@ -2986,6 +2986,35 @@ def _build_negative_issue_body(belief: dict) -> str:
     return "\n".join(lines)
 
 
+def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
+    """Create any missing labels on the target repo."""
+    if platform == "github":
+        result = subprocess.run(
+            ["gh", "label", "list", "--repo", repo_slug, "--json", "name", "-q", ".[].name"],
+            capture_output=True, text=True,
+        )
+        existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
+        for label in required - existing:
+            click.echo(f"  Creating label: {label}", err=True)
+            subprocess.run(
+                ["gh", "label", "create", label, "--repo", repo_slug,
+                 "--description", "Auto-created by code-expert file-issues"],
+                capture_output=True, text=True,
+            )
+    elif platform == "gitlab":
+        result = subprocess.run(
+            ["glab", "label", "list", "--repo", repo_slug],
+            capture_output=True, text=True,
+        )
+        existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
+        for label in required - existing:
+            click.echo(f"  Creating label: {label}", err=True)
+            subprocess.run(
+                ["glab", "label", "create", label, "--repo", repo_slug],
+                capture_output=True, text=True,
+            )
+
+
 def _create_issue(platform: str, repo_slug: str, title: str, body: str,
                   labels: list[str]) -> str | None:
     """Create an issue and return its URL, or None on failure."""
@@ -3493,6 +3522,11 @@ def file_issues(ctx, repo_slug, platform_override, labels, dry_run, skip_confirm
         if unconfirmed:
             click.echo(f"  {unconfirmed} belief(s) no longer present in code", err=True)
         remaining = confirmed
+
+    # Ensure required labels exist
+    if not dry_run and remaining:
+        required_labels = {"reasons-gate", "reasons-negative"} | set(labels)
+        _ensure_labels(platform, repo_slug, required_labels)
 
     # File issues
     filed = []
