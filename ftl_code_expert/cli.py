@@ -254,7 +254,7 @@ def _find_entry_points(repo_path: str, config_content: str | None, lang=None) ->
 @click.option("--repo", "-r", type=click.Path(exists=True, file_okay=False),
               default=None, help="Repository root (default: from config or cwd)")
 @click.option("--model", "-m", default="claude", help="Model to use (default: claude)")
-@click.option("--timeout", "-t", default=300, type=int, help="LLM timeout in seconds (default: 300)")
+@click.option("--timeout", "-t", default=600, type=int, help="LLM timeout in seconds (default: 600)")
 @click.option("--parallel", "-j", default=3, type=int, help="Max concurrent LLM calls (default: 3)")
 @click.pass_context
 def cli(ctx, quiet, repo, model, timeout, parallel):
@@ -2822,7 +2822,7 @@ def derive(ctx, output, model, auto_add, exhaust, dry_run, budget, sample, topic
 
     if model is None:
         model = ctx.obj["model"]
-    timeout = ctx.obj["timeout"] if ctx.obj["timeout"] != 300 else 600
+    timeout = ctx.obj["timeout"]
 
     cmd = ["reasons", "derive", "-m", model, "--timeout", str(timeout),
            "--budget", str(budget), "-o", output]
