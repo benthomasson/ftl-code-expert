@@ -118,7 +118,7 @@ GO = LanguageProfile(
         r"^type\s+{symbol}\b",
         r"^var\s+{symbol}\b",
         r"^const\s+{symbol}\b",
-        r"^{symbol}\s*[=\s]",
+        r"^{symbol}\s*=",
         r"^package\s+{symbol}\b",
     ],
     import_line_prefixes=["import"],
