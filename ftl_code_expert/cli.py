@@ -271,6 +271,15 @@ def cli(ctx, quiet, repo, model, timeout, parallel):
         ctx.obj["repo"] = config.get("repo_path", os.getcwd()) if config else os.getcwd()
 
 
+@cli.result_callback()
+@click.pass_context
+def _print_cost(ctx, *_args, **_kwargs):
+    from .llm import format_cost_summary
+    cost = format_cost_summary()
+    if cost:
+        click.echo(f"  {cost}", err=True)
+
+
 # --- init ---
 
 
