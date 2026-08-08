@@ -56,6 +56,45 @@ reasons compact
 code-expert update --since-last      # walk commits + propose + derive + summary
 code-expert generate-summary         # standalone morning summary
 
+# Verification
+code-expert verify <belief-id>           # check one belief against current code
+code-expert verify --all                 # verify all IN beliefs
+code-expert verify --gated               # verify beliefs blocking downstream chains
+code-expert verify --negative --retract  # verify negative beliefs, retract stale ones
+code-expert infer-sources --all          # infer source files for beliefs missing them
+
 # Status
 code-expert status
 ```
+
+## Using the Reasons Database
+
+When a `reasons.db` exists, **search beliefs before reading code**. The belief network contains verified claims about the codebase — architecture, patterns, bugs, invariants — that persist across sessions.
+
+### Answering questions about the code
+
+1. `reasons search "<question>"` — find beliefs relevant to the question
+2. `reasons show <belief-id>` — read the full belief, its justification chain, and metadata
+3. `reasons explain <belief-id>` — trace why a belief is IN or OUT
+4. Read the actual source code to confirm the belief still holds
+5. If a belief is stale, run `code-expert verify <belief-id>` to formally check it
+
+### Before modifying code
+
+1. `reasons search "<area being changed>"` — find beliefs about the affected code
+2. Check for negative beliefs (bugs, gaps, risks) that the change might interact with
+3. Check for gated beliefs — changes might unblock or break downstream reasoning chains
+4. After making changes, verify affected beliefs: `code-expert verify --category <keyword>`
+
+### Key reasons commands
+
+```bash
+reasons search "thread safety"     # semantic search across all beliefs
+reasons show <id>                  # full details including dependents
+reasons explain <id>               # trace justification chain (why IN or OUT)
+reasons list                       # all nodes with status
+reasons list --negative            # bugs, gaps, risks
+reasons list --gated               # beliefs blocked by negative findings
+```
+
+The belief network is the project's accumulated knowledge. Searching it first avoids re-discovering what is already known and surfaces constraints that pure code reading would miss.

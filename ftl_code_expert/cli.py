@@ -2995,6 +2995,51 @@ def _build_negative_issue_body(belief: dict) -> str:
     return "\n".join(lines)
 
 
+def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:
+    """Create any missing labels on the target repo."""
+    if platform == "github":
+        result = subprocess.run(
+            ["gh", "label", "list", "--repo", repo_slug, "-L", "1000",
+             "--json", "name", "-q", ".[].name"],
+            capture_output=True, text=True,
+        )
+        existing = set(result.stdout.strip().splitlines()) if result.returncode == 0 else set()
+        for label in required - existing:
+            click.echo(f"  Creating label: {label}", err=True)
+            r = subprocess.run(
+                ["gh", "label", "create", label, "--repo", repo_slug,
+                 "--description", "Auto-created by code-expert file-issues"],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                click.echo(f"  Failed to create label {label}: {r.stderr.strip()}", err=True)
+    elif platform == "gitlab":
+        result = subprocess.run(
+            ["glab", "label", "list", "--repo", repo_slug, "-F", "json"],
+            capture_output=True, text=True,
+        )
+        existing: set[str] = set()
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                parsed = json.loads(result.stdout)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            name = item.get("name", "")
+                            if name:
+                                existing.add(name)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        for label in required - existing:
+            click.echo(f"  Creating label: {label}", err=True)
+            r = subprocess.run(
+                ["glab", "label", "create", "--name", label, "--repo", repo_slug],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                click.echo(f"  Failed to create label {label}: {r.stderr.strip()}", err=True)
+
+
 def _create_issue(platform: str, repo_slug: str, title: str, body: str,
                   labels: list[str]) -> str | None:
     """Create an issue and return its URL, or None on failure."""
@@ -3502,6 +3547,11 @@ def file_issues(ctx, repo_slug, platform_override, labels, dry_run, skip_confirm
         if unconfirmed:
             click.echo(f"  {unconfirmed} belief(s) no longer present in code", err=True)
         remaining = confirmed
+
+    # Ensure required labels exist
+    if not dry_run and remaining:
+        required_labels = {"reasons-gate", "reasons-negative"} | set(labels)
+        _ensure_labels(platform, repo_slug, required_labels)
 
     # File issues
     filed = []
