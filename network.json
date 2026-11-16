@@ -1,0 +1,166 @@
+{
+  "meta": {
+    "schema_version": "1.0",
+    "project_name": "reasons",
+    "created_at": "2026-11-09T22:40:13+00:00",
+    "updated_at": "2026-11-16T17:18:38+00:00",
+    "node_count": 8,
+    "generator": "reasonsforge/0.74.0"
+  },
+  "nodes": {
+    "accept-beliefs-requires-pre-marked-proposals": {
+      "text": "The accept-beliefs command depends on proposals being pre-marked.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "7688de8269f5df160982bfbc1d52b8d53e88bade6d8217250c11b100a9f721ae",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "derive-auto-adds-one-round-of-derivations": {
+      "text": "The derive --auto command adds one round of derivations.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "0330abc3f6e43eea851cad362d1463c450bd82e7348044c0c74ad7e977786629",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "file-issues-has-external-side-effects": {
+      "text": "The file-issues command has external side effects.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "1b19bcdba0fa02c12098027e8bd721a902a9da89d91f46cfa0965e19f90143c9",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "nightly-orchestrator-command-does-not-exist": {
+      "text": "A top-level nightly orchestrator command does not exist.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "8dc640dff07cf68661a30593cf247104f786aad11f3c06fbc1f470e651c0178a",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "propose-beliefs-lacks-auto-flag": {
+      "text": "The propose-beliefs command has no --auto flag.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "4d7e56117ba2a929fbec59156e727b0627918807e0461dc0ac252ced033f4320",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "summary-report-command-does-not-exist": {
+      "text": "A summary report command does not exist.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "8c8c50cf7b2a96669917ea3dce96245d7d22d7f16004b4e504d3b6677dbf4f8a",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "walk-commits-calls-explore-per-file": {
+      "text": "The walk-commits command calls explore per file.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "9d3dfba227c53927dc1b5eed719673134ebcd9e1f49fb64a163b182ac8889315",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    },
+    "walk-commits-since-last-works": {
+      "text": "The walk-commits --since-last step works.",
+      "truth_value": "IN",
+      "supporting_justification": null,
+      "justifications": [],
+      "source": "/home/forge/workspace/entries/2026/04/29/nightly-update-workflow-design.md",
+      "source_url": "",
+      "source_hash": "",
+      "text_hash": "fd6bcf7ed75222fe63569111ef4cda9d5f3ddf4e2ca0fd75d9dd06674c2a256f",
+      "date": "",
+      "metadata": {
+        "model": "openai:rits/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+      },
+      "created_at": "2026-11-09T22:40:13+00:00",
+      "updated_at": "2026-11-09T22:40:13+00:00",
+      "reviewed_at": "",
+      "verified_at": "",
+      "retracted_at": ""
+    }
+  },
+  "nogoods": [],
+  "repos": {}
+}
