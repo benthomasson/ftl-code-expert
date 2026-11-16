@@ -1,0 +1,13 @@
+```json
+[
+  {"name": "reasons_export_full", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_reasons_export"}},
+  {"name": "extract_source_file", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_extract_source_file"}},
+  {"name": "gather_confirmation_context", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_gather_confirmation_context"}},
+  {"name": "parse_observation_requests_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "parse_observation_requests"}},
+  {"name": "run_observations_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "run_observations"}},
+  {"name": "read_file_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "read_file"}},
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "has_reasons_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_has_reasons"}},
+  {"name": "get_repo_structure_usage", "tool": "find_usages", "params": {"symbol": "get_repo_structure"}}
+]
+```

@@ -1,0 +1,19 @@
+```json
+[
+  {"name": "init_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "init"}},
+  {"name": "scan_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "scan"}},
+  {"name": "explore_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "explore"}},
+  {"name": "propose_beliefs_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "propose_beliefs"}},
+  {"name": "review_proposals_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "review_proposals"}},
+  {"name": "accept_beliefs_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "accept_beliefs"}},
+  {"name": "derive_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "derive"}},
+  {"name": "generate_summary_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "generate_summary"}},
+  {"name": "file_issues_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "file_issues"}},
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "pending_count_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "pending_count"}},
+  {"name": "get_project_dir_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_get_project_dir"}},
+  {"name": "caffeinate_hold_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/caffeinate.py", "function_name": "hold"}},
+  {"name": "analyze_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "file_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}}
+]
+```

@@ -1,0 +1,37 @@
+I will execute `uv run pytest` to run the test suite and verify if any existing tests fail, or if there are tests specifically for the language profiles (like `ftl_code_expert/language.py`).
+### ftl_code_expert/language.py
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING:
+The addition of the Go language profile is a great step, but there are multiple correctness, integration, and testing concerns:
+
+1. **Integration Gap (`_CONFIG_TO_LANGUAGE`)**:
+   The profile defines `config_files=["go.mod"]`, but `"go.mod": "go"` has not been added to `_CONFIG_TO_LANGUAGE` (which immediately follows `LANGUAGE_REGISTRY`). Any automatic language detection based on project configuration files will fail to recognize Go projects.
+
+2. **Go Generics Support on Receivers**:
+   The receiver pattern `r"(\(\s*\w+\s+\*?\w+\s*\)\s+)?"` in `func` fails to match methods defined on generic types (e.g., `func (r *MyStruct[T]) MyMethod()`) because `\*?\w+` does not match the type parameter bracket characters (`[` and `]`). Unnamed receivers (e.g., `func (*MyType) MyMethod()`) will also fail to match because the pattern expects both a receiver name and a receiver type separated by whitespace.
+
+3. **Go Generics Support on Types**:
+   The pattern `r"^type\s+{symbol}\s+"` will miss generic type definitions (e.g., `type MyContainer[T any] struct`) because there is typically no space between the type name and the generic bracket. Replacing the trailing `\s+` with `\b` or `(?:\s+|\[)` would solve this.
+
+4. **Variables and Constants Spacing**:
+   The patterns `r"^var\s+{symbol}\s+"` and `r"^const\s+{symbol}\s+"` require a trailing space, which will fail to match valid compact declarations like `var x=1` or `const C=2`. Using `\b` instead of the trailing `\s+` is much more robust.
+
+5. **No Test Coverage**:
+   The profile is entirely untested. Unit tests should be added to verify these regular expressions against standard, generic, and edge-case Go declarations.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Could not view the full structure of `_CONFIG_TO_LANGUAGE` or how other language profiles (e.g., Rust/Python) are tested in the codebase due to the absence of the test files and complete helper definitions in the provided context.
+- Was unable to run the workspace tests to verify compatibility or existing test patterns due to tool execution policy restrictions.
+---
+
+### FEATURE_REQUESTS
+- Include the complete file content of modified modules (or at least larger class/variable context) to verify adjacent dictionaries and mappings.
+- Provide the corresponding unit test files automatically alongside the implementation files to ease verification of test coverage.

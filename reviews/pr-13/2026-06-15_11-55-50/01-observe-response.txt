@@ -1,0 +1,9 @@
+```json
+[
+  {"name": "extract_source_file_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_extract_source_file"}},
+  {"name": "accept_proposals_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_accept_proposals"}},
+  {"name": "gather_belief_context_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_gather_belief_context"}},
+  {"name": "extract_source_file_callers", "tool": "find_callers", "params": {"symbol": "_extract_source_file"}},
+  {"name": "accept_proposals_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}}
+]
+```

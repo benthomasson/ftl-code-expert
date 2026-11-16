@@ -1,0 +1,16 @@
+```json
+[
+  {"name": "verify_belief_full", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_verify_belief_with_observations"}},
+  {"name": "parse_inferred_files_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_parse_inferred_files"}},
+  {"name": "invoke_raises", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke"}},
+  {"name": "invoke_concurrent_sync_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_concurrent_sync"}},
+  {"name": "read_file_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "read_file"}},
+  {"name": "extract_source_file_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_extract_source_file"}},
+  {"name": "get_repo_structure_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "get_repo_structure"}},
+  {"name": "has_reasons_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_has_reasons"}},
+  {"name": "set_metadata_callers", "tool": "find_usages", "params": {"symbol": "set_metadata", "file_path": "ftl_code_expert/cli.py"}},
+  {"name": "infer_sources_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}},
+  {"name": "verify_infer_prompt_usages", "tool": "find_usages", "params": {"symbol": "VERIFY_INFER_FILE_PROMPT"}}
+]
+```

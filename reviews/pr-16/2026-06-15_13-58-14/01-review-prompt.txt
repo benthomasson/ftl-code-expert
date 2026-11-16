@@ -1,0 +1,992 @@
+You are a senior code reviewer. Review the following code changes.
+
+## Specification
+
+No specification provided. Focus on correctness, tests, and integration.
+
+
+
+
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 0cebfd5..13eb60c 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -26,20 +26,21 @@ from .git_utils import (
+     list_commits_with_files,
+     load_diff_checkpoint,
+     save_diff_checkpoint,
+ )
+ from .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync
+ from .observations import parse_observation_requests, run_observations
+ from .prompts import (
+     PROPOSE_BELIEFS_CODE,
+     RESEARCH_INFER_FILES_PROMPT,
+     REVIEW_PROMPT,
++    VERIFY_OBSERVE_PROMPT,
+     VERIFY_PROMPT,
+     build_diff_prompt,
+     build_diff_summary_prompt,
+     build_file_prompt,
+     build_function_prompt,
+     build_observe_prompt,
+     build_repo_prompt,
+     build_scan_prompt,
+ )
+ from .topics import (
+@@ -2210,26 +2211,26 @@ def _reasons_export():
+     network_path = Path("network.json")
+ 
+     result = subprocess.run(
+         ["reasons", "export-markdown"],
+         capture_output=True, text=True,
+     )
+     if result.returncode == 0:
+         beliefs_path.write_text(result.stdout)
+         click.echo(f"Updated {beliefs_path}")
+ 
++    # reasons export writes network.json directly (stdout is just a status message)
+     result = subprocess.run(
+         ["reasons", "export"],
+         capture_output=True, text=True,
+     )
+     if result.returncode == 0:
+-        network_path.write_text(result.stdout)
+         click.echo(f"Updated {network_path}")
+ 
+ 
+ def _load_existing_from_reasons() -> list[dict]:
+     """Load existing beliefs from reasons.db via CLI."""
+     result = subprocess.run(
+         ["reasons", "list"],
+         capture_output=True, text=True,
+     )
+     if result.returncode != 0:
+@@ -3053,20 +3054,157 @@ async def _gather_confirmation_context(
+     results = await asyncio.gather(*tasks, return_exceptions=True)
+     contexts: dict[str, str] = {}
+     for i, result in enumerate(results):
+         if isinstance(result, Exception):
+             contexts[beliefs[i]["id"]] = "(error gathering context)"
+         else:
+             contexts[result[0]] = result[1]
+     return contexts
+ 
+ 
++async def _auto_gather_verify_observations(
++    belief: dict,
++    node: dict,
++    repo_path: str,
++    project_dir: str | None,
++) -> tuple[str | None, dict]:
++    """Auto-gather observations for a belief before LLM involvement.
++
++    Reads the source file, finds key symbols, and runs find_usages/grep
++    in parallel. Returns (src_file, observations_dict).
++    """
++    from .observations import find_symbol, find_usages, grep, read_file
++
++    bid = belief["id"]
++    source = node.get("source", "")
++    obs: dict = {}
++
++    src_file = (node.get("metadata") or {}).get("source_file")
++    if not src_file:
++        src_file = _extract_source_file(source, project_dir)
++
++    auto_tasks = []
++    auto_names = []
++
++    if src_file:
++        auto_tasks.append(read_file(src_file, repo_path, max_lines=500))
++        auto_names.append(f"source_file:{src_file}")
++
++    terms = [t for t in bid.replace("-", " ").split() if len(t) > 3]
++    symbols = []
++    for term in terms[:3]:
++        if term[0].isupper() or "_" in term:
++            symbols.append(term)
++
++    for sym in symbols[:2]:
++        auto_tasks.append(find_usages(sym, repo_path))
++        auto_names.append(f"find_usages:{sym}")
++
++    if not symbols and terms:
++        auto_tasks.append(grep(terms[0], repo_path, glob="*.py", max_results=10))
++        auto_names.append(f"grep:{terms[0]}")
++
++    results = await asyncio.gather(*auto_tasks, return_exceptions=True)
++    for name, result in zip(auto_names, results):
++        if isinstance(result, Exception):
++            continue
++        obs[name] = result
++
++    return src_file, obs
++
++
++async def _verify_belief_with_observations(
++    belief: dict,
++    node: dict,
++    repo_path: str,
++    project_dir: str | None,
++    model: str,
++    timeout: int,
++) -> tuple[str, str]:
++    """Gather code context for a belief using the observe pattern.
++
++    1. Auto-gather: read source file + find_usages/grep for key symbols
++    2. Ask LLM what additional observations it needs
++    3. Execute LLM-requested observations in parallel
++    4. Return combined context
++    """
++    bid = belief["id"]
++
++    src_file, auto_obs = await _auto_gather_verify_observations(
++        belief, node, repo_path, project_dir,
++    )
++
++    seed_context = ""
++    source_key = f"source_file:{src_file}" if src_file else None
++    if source_key and source_key in auto_obs:
++        file_result = auto_obs[source_key]
++        if "content" in file_result:
++            content = file_result["content"]
++            if len(content) > 4000:
++                content = content[:4000] + "\n... (truncated)"
++            seed_context = f"### {src_file}\n```\n{content}\n```"
++
++    tree = get_repo_structure(repo_path, max_depth=2)
++    observe_prompt = VERIFY_OBSERVE_PROMPT.format(
++        belief_id=bid,
++        belief_text=belief["text"],
++        seed_context=seed_context or "(no initial source file)",
++        tree=tree,
++    )
++    observe_response = await invoke(observe_prompt, model, timeout=timeout)
++    requested_obs = parse_observation_requests(observe_response)
++
++    llm_obs = {}
++    if requested_obs:
++        llm_obs = await run_observations(requested_obs, repo_path)
++
++    all_obs = {**auto_obs, **llm_obs}
++
++    context_parts: list[str] = []
++    if seed_context:
++        context_parts.append(seed_context)
++    if all_obs:
++        display_obs = {k: v for k, v in all_obs.items() if k != source_key}
++        if display_obs:
++            context_parts.append(
++                f"## Observations\n\n```json\n{json.dumps(display_obs, indent=2, default=str)}\n```"
++            )
++
++    return bid, "\n\n".join(context_parts) if context_parts else "(no code context found)"
++
++
++async def _gather_verify_contexts(
++    beliefs: list[dict],
++    nodes: dict,
++    repo_path: str,
++    project_dir: str | None,
++    model: str,
++    timeout: int,
++) -> dict[str, str]:
++    """Gather observation-based code context for verifying beliefs."""
++    tasks = [
++        _verify_belief_with_observations(
++            b, nodes.get(b["id"], {}), repo_path, project_dir, model, timeout,
++        )
++        for b in beliefs
++    ]
++    results = await asyncio.gather(*tasks, return_exceptions=True)
++    contexts: dict[str, str] = {}
++    for i, result in enumerate(results):
++        if isinstance(result, Exception):
++            click.echo(f"  Error gathering context for {beliefs[i]['id']}: {result}", err=True)
++            contexts[beliefs[i]["id"]] = "(error gathering context)"
++        else:
++            contexts[result[0]] = result[1]
++    return contexts
++
++
+ def _parse_confirmation(response: str) -> dict[str, bool]:
+     """Parse JSON confirmation response from LLM."""
+     m = re.search(r"\{[^{}]*\}", response, re.DOTALL)
+     if m:
+         try:
+             data = json.loads(m.group(0))
+             return {k: bool(v) for k, v in data.items()}
+         except (json.JSONDecodeError, TypeError):
+             pass
+     return {}
+@@ -3728,22 +3866,24 @@ def _parse_verify_response(response: str) -> dict[str, dict]:
+ @click.option("--negative", is_flag=True, default=False,
+               help="Verify negative IN beliefs (bugs, gaps, risks)")
+ @click.option("--all", "verify_all", is_flag=True, default=False,
+               help="Verify all IN beliefs (expensive)")
+ @click.option("--retract", is_flag=True, default=False,
+               help="Retract STALE beliefs via reasons")
+ @click.option("--dry-run", is_flag=True, default=False,
+               help="Show what would be verified without calling LLM")
+ @click.option("--batch-size", type=int, default=10,
+               help="Beliefs per LLM batch (default: 10)")
++@click.option("--no-observe", is_flag=True, default=False,
++              help="Skip observation loop; use simple file read + grep for context")
+ @click.pass_context
+-def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size):
++def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size, no_observe):
+     """Check whether beliefs still hold against current source code.
+ 
+     Reads the current source code for each belief and asks an LLM whether
+     the claim is CONFIRMED, STALE, or INCONCLUSIVE.
+ 
+     Examples:
+         code-expert verify login-audit-always-success-info
+         code-expert verify --category auth
+         code-expert verify --gated
+         code-expert verify --negative --retract
+@@ -3755,20 +3895,24 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
+     model = ctx.obj["model"]
+     timeout = ctx.obj["timeout"]
+     repo_path = _get_repo(ctx)
+     abs_repo = os.path.abspath(repo_path)
+     project_dir = _get_project_dir(ctx)
+ 
+     if not check_model_available(model):
+         click.echo(f"Error: Model '{model}' CLI not available", err=True)
+         sys.exit(1)
+ 
++    # Re-export to ensure fresh metadata (fixes stale network.json)
++    if _has_reasons():
++        _reasons_export()
++
+     # Load belief network
+     try:
+         network = _load_network()
+         nodes = network.get("nodes", {})
+     except Exception as e:
+         click.echo(f"Error loading belief network: {e}", err=True)
+         sys.exit(1)
+ 
+     if not nodes:
+         click.echo("No beliefs found. Run explorations and propose-beliefs first.")
+@@ -3830,23 +3974,28 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
+         click.echo("\n--dry-run: stopping before LLM verification.", err=True)
+         return
+ 
+     # Verify in batches
+     all_results: dict[str, dict] = {}
+     batches = [beliefs[i:i + batch_size] for i in range(0, len(beliefs), batch_size)]
+ 
+     for i, batch in enumerate(batches):
+         click.echo(f"\nVerifying batch {i + 1}/{len(batches)} ({len(batch)} beliefs)...", err=True)
+ 
+-        contexts = asyncio.run(
+-            _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
+-        )
++        if no_observe:
++            contexts = asyncio.run(
++                _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
++            )
++        else:
++            contexts = asyncio.run(
++                _gather_verify_contexts(batch, nodes, abs_repo, project_dir, model, timeout)
++            )
+ 
+         beliefs_section = []
+         for belief in batch:
+             ctx_text = contexts.get(belief["id"], "(no code context found)")
+             beliefs_section.append(
+                 f"### `{belief['id']}`\n{belief['text']}\n\n"
+                 f"**Code context:**\n{ctx_text}"
+             )
+ 
+         prompt = VERIFY_PROMPT.format(beliefs="\n\n---\n\n".join(beliefs_section))
+diff --git a/ftl_code_expert/prompts/__init__.py b/ftl_code_expert/prompts/__init__.py
+index b0feca3..2d6fb0b 100644
+--- a/ftl_code_expert/prompts/__init__.py
++++ b/ftl_code_expert/prompts/__init__.py
+@@ -2,32 +2,33 @@
+ 
+ from .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS
+ from .diff import build_diff_prompt, build_diff_summary_prompt
+ from .file import build_file_prompt
+ from .function import build_function_prompt
+ from .observe import build_observe_prompt
+ from .derive import DERIVE_BELIEFS_PROMPT
+ from .propose import PROPOSE_BELIEFS_CODE
+ from .research import RESEARCH_INFER_FILES_PROMPT
+ from .review import REVIEW_PROMPT
+-from .verify import VERIFY_PROMPT
++from .verify import VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT
+ from .repo import build_repo_prompt
+ from .scan import build_scan_prompt
+ from .spec import GENERATE_SPEC_PROMPT
+ 
+ __all__ = [
+     "BELIEFS_INSTRUCTIONS",
+     "DERIVE_BELIEFS_PROMPT",
+     "GENERATE_SPEC_PROMPT",
+     "PROPOSE_BELIEFS_CODE",
+     "RESEARCH_INFER_FILES_PROMPT",
+     "REVIEW_PROMPT",
++    "VERIFY_OBSERVE_PROMPT",
+     "VERIFY_PROMPT",
+     "TOPICS_INSTRUCTIONS",
+     "build_diff_prompt",
+     "build_diff_summary_prompt",
+     "build_file_prompt",
+     "build_function_prompt",
+     "build_observe_prompt",
+     "build_repo_prompt",
+     "build_scan_prompt",
+ ]
+diff --git a/ftl_code_expert/prompts/verify.py b/ftl_code_expert/prompts/verify.py
+index ee72f3c..67ae6cc 100644
+--- a/ftl_code_expert/prompts/verify.py
++++ b/ftl_code_expert/prompts/verify.py
+@@ -1,11 +1,71 @@
+-"""Prompt template for verifying belief staleness against current source code."""
++"""Prompt templates for verifying belief staleness against current source code."""
++
++VERIFY_OBSERVE_PROMPT = """\
++You are preparing to verify whether a belief about a codebase still holds.
++
++## Belief to Verify
++
++**ID:** {belief_id}
++
++**Claim:** {belief_text}
++
++## Initial Code Context
++
++{seed_context}
++
++## Repository Structure
++
++```
++{tree}
++```
++
++## Your Task
++
++Determine what additional information you need to confirm or refute this belief.
++Do NOT verify the belief yet. Only request observations.
++
++## Available Observation Tools
++
++| Tool | Purpose | Params |
++|------|---------|--------|
++| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
++| `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
++| `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
++| `find_symbol` | Find where a class/function is defined | `symbol` |
++| `find_usages` | Find where a symbol is used | `symbol` |
++| `file_imports` | Extract imports from a file | `file_path` |
++
++## Output Format
++
++Output a JSON array of observation requests:
++
++```json
++[
++  {{"name": "descriptive_name", "tool": "tool_name", "params": {{"param": "value"}}}},
++  ...
++]
++```
++
++## Guidelines
++
++- Request 3-8 observations. Be targeted, not exhaustive.
++- Focus on what you need to verify the specific claim above.
++- If the initial code context already covers the claim, request observations that would \
++confirm related behavior (callers, tests, configuration).
++- Use `find_usages` to trace how functions/classes are actually used.
++- Use `find_symbol` to locate definitions referenced in the belief.
++- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.
++
++Now output your observation requests as JSON:
++"""
++
+ 
+ VERIFY_PROMPT = """\
+ You are verifying whether beliefs about a codebase still hold by examining the current source code.
+ 
+ For each belief below, I provide the belief text and relevant code context gathered from \
+ the current state of the repository.
+ 
+ Determine whether each belief is:
+ - **CONFIRMED** — the current code still supports this claim
+ - **STALE** — the code has changed and the belief no longer holds (explain what changed)
+
+```
+
+## Observation Results
+
+You previously requested observations. Here are the results:
+
+```json
+{
+  "ftl_code_expert/cli.py:_reasons_export": {
+    "function": "_reasons_export",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2208,
+    "end_line": 2227,
+    "source": "def _reasons_export():\n    \"\"\"Re-export beliefs.md and network.json from reasons after adding beliefs.\"\"\"\n    beliefs_path = Path(\"beliefs.md\")\n    network_path = Path(\"network.json\")\n\n    result = subprocess.run(\n        [\"reasons\", \"export-markdown\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        beliefs_path.write_text(result.stdout)\n        click.echo(f\"Updated {beliefs_path}\")\n\n    # reasons export writes network.json directly (stdout is just a status message)\n    result = subprocess.run(\n        [\"reasons\", \"export\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        click.echo(f\"Updated {network_path}\")"
+  },
+  "ftl_code_expert/cli.py:_load_existing_from_reasons": {
+    "function": "_load_existing_from_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2230,
+    "end_line": 2244,
+    "source": "def _load_existing_from_reasons() -> list[dict]:\n    \"\"\"Load existing beliefs from reasons.db via CLI.\"\"\"\n    result = subprocess.run(\n        [\"reasons\", \"list\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode != 0:\n        return []\n    beliefs = []\n    for line in result.stdout.splitlines():\n        # Format: \"  [+] node-id  (premise)\" or \"  [-] node-id  (premise)\"\n        m = re.match(r'\\s*\\[[+-]\\]\\s+([\\w-]+)', line)\n        if m:\n            beliefs.append({\"id\": m.group(1), \"text\": \"\", \"source\": \"\"})\n    return beliefs"
+  },
+  "ftl_code_expert/cli.py:_gather_confirmation_context": {
+    "function": "_gather_confirmation_context",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3043,
+    "end_line": 3061,
+    "source": "async def _gather_confirmation_context(\n    beliefs: list[dict],\n    nodes: dict,\n    repo_path: str,\n    project_dir: str | None = None,\n) -> dict[str, str]:\n    \"\"\"Gather code context for confirming whether beliefs still hold.\"\"\"\n    tasks = [\n        _gather_belief_context(b, nodes, repo_path, project_dir)\n        for b in beliefs\n    ]\n    results = await asyncio.gather(*tasks, return_exceptions=True)\n    contexts: dict[str, str] = {}\n    for i, result in enumerate(results):\n        if isinstance(result, Exception):\n            contexts[beliefs[i][\"id\"]] = \"(error gathering context)\"\n        else:\n            contexts[result[0]] = result[1]\n    return contexts"
+  },
+  "ftl_code_expert/cli.py:_parse_confirmation": {
+    "function": "_parse_confirmation",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3201,
+    "end_line": 3210,
+    "source": "def _parse_confirmation(response: str) -> dict[str, bool]:\n    \"\"\"Parse JSON confirmation response from LLM.\"\"\"\n    m = re.search(r\"\\{[^{}]*\\}\", response, re.DOTALL)\n    if m:\n        try:\n            data = json.loads(m.group(0))\n            return {k: bool(v) for k, v in data.items()}\n        except (json.JSONDecodeError, TypeError):\n            pass\n    return {}"
+  },
+  "ftl_code_expert/cli.py:verify": {
+    "function": "verify",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3860,
+    "end_line": 4055,
+    "source": "@cli.command(\"verify\")\n@click.argument(\"belief_ids\", nargs=-1)\n@click.option(\"--category\", default=None,\n              help=\"Verify IN beliefs matching keyword in ID or text\")\n@click.option(\"--gated\", is_flag=True, default=False,\n              help=\"Verify IN beliefs that actively gate downstream chains\")\n@click.option(\"--negative\", is_flag=True, default=False,\n              help=\"Verify negative IN beliefs (bugs, gaps, risks)\")\n@click.option(\"--all\", \"verify_all\", is_flag=True, default=False,\n              help=\"Verify all IN beliefs (expensive)\")\n@click.option(\"--retract\", is_flag=True, default=False,\n              help=\"Retract STALE beliefs via reasons\")\n@click.option(\"--dry-run\", is_flag=True, default=False,\n              help=\"Show what would be verified without calling LLM\")\n@click.option(\"--batch-size\", type=int, default=10,\n              help=\"Beliefs per LLM batch (default: 10)\")\n@click.option(\"--no-observe\", is_flag=True, default=False,\n              help=\"Skip observation loop; use simple file read + grep for context\")\n@click.pass_context\ndef verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size, no_observe):\n    \"\"\"Check whether beliefs still hold against current source code.\n\n    Reads the current source code for each belief and asks an LLM whether\n    the claim is CONFIRMED, STALE, or INCONCLUSIVE.\n\n    Examples:\n        code-expert verify login-audit-always-success-info\n        code-expert verify --category auth\n        code-expert verify --gated\n        code-expert verify --negative --retract\n        code-expert verify --all --dry-run\n    \"\"\"\n    from .caffeinate import hold as _caffeinate\n    _caffeinate()\n\n    model = ctx.obj[\"model\"]\n    timeout = ctx.obj[\"timeout\"]\n    repo_path = _get_repo(ctx)\n    abs_repo = os.path.abspath(repo_path)\n    project_dir = _get_project_dir(ctx)\n\n    if not check_model_available(model):\n        click.echo(f\"Error: Model '{model}' CLI not available\", err=True)\n        sys.exit(1)\n\n    # Re-export to ensure fresh metadata (fixes stale network.json)\n    if _has_reasons():\n        _reasons_export()\n\n    # Load belief network\n    try:\n        network = _load_network()\n        nodes = network.get(\"nodes\", {})\n    except Exception as e:\n        click.echo(f\"Error loading belief network: {e}\", err=True)\n        sys.exit(1)\n\n    if not nodes:\n        click.echo(\"No beliefs found. Run explorations and propose-beliefs first.\")\n        return\n\n    # Select beliefs to verify\n    beliefs: list[dict] = []\n\n    if belief_ids:\n        for bid in belief_ids:\n            node = nodes.get(bid)\n            if node:\n                beliefs.append({\"id\": bid, \"text\": node.get(\"text\", \"\")})\n            else:\n                click.echo(f\"  Belief not found: {bid}\", err=True)\n\n    elif gated:\n        gated_beliefs = _find_gated_out_beliefs(nodes)\n        blocker_ids = set()\n        for gb in gated_beliefs:\n            for blocker in gb.get(\"blockers\", []):\n                blocker_ids.add(blocker[\"id\"])\n        for bid in blocker_ids:\n            node = nodes.get(bid, {})\n            beliefs.append({\"id\": bid, \"text\": node.get(\"text\", \"\")})\n        click.echo(f\"Found {len(beliefs)} active blocker(s) gating {len(gated_beliefs)} downstream belief(s)\", err=True)\n\n    elif negative:\n        beliefs = _get_negative_beliefs(nodes, model=model)\n        click.echo(f\"Found {len(beliefs)} negative IN belief(s)\", err=True)\n\n    elif category:\n        keyword = category.lower()\n        for nid, node in nodes.items():\n            if node.get(\"truth_value\") != \"IN\":\n                continue\n            if keyword in nid.lower() or keyword in node.get(\"text\", \"\").lower():\n                beliefs.append({\"id\": nid, \"text\": node.get(\"text\", \"\")})\n        click.echo(f\"Found {len(beliefs)} IN belief(s) matching '{category}'\", err=True)\n\n    elif verify_all:\n        for nid, node in nodes.items():\n            if node.get(\"truth_value\") == \"IN\":\n                beliefs.append({\"id\": nid, \"text\": node.get(\"text\", \"\")})\n        click.echo(f\"Found {len(beliefs)} IN belief(s) to verify\", err=True)\n\n    else:\n        click.echo(\"Specify belief IDs, or use --category, --gated, --negative, or --all.\", err=True)\n        sys.exit(1)\n\n    if not beliefs:\n        click.echo(\"No beliefs to verify.\")\n        return\n\n    if dry_run:\n        click.echo(f\"\\n{len(beliefs)} belief(s) would be verified:\", err=True)\n        for b in beliefs:\n            click.echo(f\"  {b['id']}: {b['text'][:100]}\", err=True)\n        click.echo(\"\\n--dry-run: stopping before LLM verification.\", err=True)\n        return\n\n    # Verify in batches\n    all_results: dict[str, dict] = {}\n    batches = [beliefs[i:i + batch_size] for i in range(0, len(beliefs), batch_size)]\n\n    for i, batch in enumerate(batches):\n        click.echo(f\"\\nVerifying batch {i + 1}/{len(batches)} ({len(batch)} beliefs)...\", err=True)\n\n        if no_observe:\n            contexts = asyncio.run(\n                _gather_confirmation_context(batch, nodes, abs_repo, project_dir)\n            )\n        else:\n            contexts = asyncio.run(\n                _gather_verify_contexts(batch, nodes, abs_repo, project_dir, model, timeout)\n            )\n\n        beliefs_section = []\n        for belief in batch:\n            ctx_text = contexts.get(belief[\"id\"], \"(no code context found)\")\n            beliefs_section.append(\n                f\"### `{belief['id']}`\\n{belief['text']}\\n\\n\"\n                f\"**Code context:**\\n{ctx_text}\"\n            )\n\n        prompt = VERIFY_PROMPT.format(beliefs=\"\\n\\n---\\n\\n\".join(beliefs_section))\n\n        try:\n            response = invoke_sync(prompt, model=model, timeout=timeout)\n            results = _parse_verify_response(response)\n            all_results.update(results)\n        except Exception as e:\n            click.echo(f\"  Error: {e}\", err=True)\n\n    # Report results\n    confirmed = []\n    stale = []\n    inconclusive = []\n\n    for belief in beliefs:\n        bid = belief[\"id\"]\n        result = all_results.get(bid)\n        if not result:\n            inconclusive.append(bid)\n            click.echo(f\"  {bid}: INCONCLUSIVE (no verdict returned)\", err=True)\n            continue\n\n        verdict = result[\"verdict\"]\n        reason = result.get(\"reason\", \"\")\n\n        if verdict == \"CONFIRMED\":\n            confirmed.append(bid)\n            click.echo(f\"  {bid}: CONFIRMED \u2014 {reason}\", err=True)\n        elif verdict == \"STALE\":\n            stale.append(bid)\n            click.echo(f\"  {bid}: STALE \u2014 {reason}\", err=True)\n        else:\n            inconclusive.append(bid)\n            click.echo(f\"  {bid}: INCONCLUSIVE \u2014 {reason}\", err=True)\n\n    click.echo(f\"\\nResults: {len(confirmed)} confirmed, {len(stale)} stale, \"\n               f\"{len(inconclusive)} inconclusive\", err=True)\n\n    # Retract stale beliefs\n    if retract and stale and _has_reasons():\n        click.echo(f\"\\nRetracting {len(stale)} stale belief(s)...\", err=True)\n        for bid in stale:\n            reason = all_results.get(bid, {}).get(\"reason\", \"stale per verify\")\n            result = subprocess.run(\n                [\"reasons\", \"retract\", bid, \"--reason\", reason],\n                capture_output=True, text=True,\n            )\n            if result.returncode == 0:\n                click.echo(f\"  Retracted: {bid}\", err=True)\n            else:\n                click.echo(f\"  Failed to retract {bid}: {result.stderr.strip()}\", err=True)\n        _reasons_export()\n        click.echo(\"Network updated.\", err=True)\n    elif retract and stale:\n        click.echo(\"\\nCannot retract: reasons CLI not available.\", err=True)"
+  },
+  "related_test:.venv/lib/python3.14/site-packages/sympy/core/tests/test_arit.py": {
+    "path": ".venv/lib/python3.14/site-packages/sympy/core/tests/test_arit.py",
+    "covers": [
+      "ftl_code_expert/prompts/verify.py"
+    ],
+    "symbols_referenced": [
+      "verify"
+    ],
+    "content": "from sympy.core.add import Add\nfrom sympy.core.basic import Basic\nfrom sympy.core.mod import Mod\nfrom sympy.core.mul import Mul\nfrom sympy.core.numbers import (Float, I, Integer, Rational, comp, nan,\n    oo, pi, zoo)\nfrom sympy.core.power import Pow\nfrom sympy.core.singleton import S\nfrom sympy.core.symbol import (Dummy, Symbol, symbols)\nfrom sympy.core.sympify import sympify\nfrom sympy.functions.combinatorial.factorials import factorial\nfrom sympy.functions.elementary.complexes import (im, re, sign)\nfrom sympy.functions.elementary.exponential import (exp, log)\nfrom sympy.functions.elementary.integers import floor\nfrom sympy.functions.elementary.miscellaneous import (Max, sqrt)\nfrom sympy.functions.elementary.trigonometric import (atan, cos, sin)\nfrom sympy.integrals.integrals import Integral\nfrom sympy.polys.polytools import Poly\nfrom sympy.sets.sets import FiniteSet\n\nfrom sympy.core.parameters import distribute, evaluate\nfrom sympy.core.expr import unchanged\nfrom sympy.utilities.iterables import permutations\nfrom sympy.testing.pytest import XFAIL, raises, warns\nfrom sympy.utilities.exceptions import SymPyDeprecationWarning\nfrom sympy.core.random import verify_numerically\nfrom sympy.functions.elementary.trigonometric import asin\n\nfrom itertools import product\n\na, c, x, y, z = symbols('a,c,x,y,z')\nb = Symbol(\"b\", positive=True)\n\n\ndef same_and_same_prec(a, b):\n    # stricter matching for Floats\n    return a == b and a._prec == b._prec\n\n\ndef test_bug1():\n    assert re(x) != x\n    x.series(x, 0, 1)\n    assert re(x) != x\n\n\ndef test_Symbol():\n    e = a*b\n    assert e == a*b\n    assert a*b*b == a*b**2\n    assert a*b*b + c == c + a*b**2\n    assert a*b*b - c == -c + a*b**2\n\n    x = Symbol('x', complex=True, real=False)\n    assert x.is_imaginary is None  # could be I or 1 + I\n    x = Symbol('x', complex=True, imaginary=False)\n    assert x.is_real is None  # could be 1 or 1 + I\n    x = Symbol('x', real=True)\n    assert x.is_complex\n    x = Symbol('x', imaginary=True)\n    assert x.is_complex\n    x = Symbol('x', real=False, imaginary=False)\n    assert x.is_complex is None  # might be a non-number\n\n\ndef test_arit0():\n    p = Rational(5)\n    e = a*b\n    assert e == a*b\n    e = a*b + b*a\n    assert e == 2*a*b\n    e = a*b + b*a + a*b + p*b*a\n    assert e == 8*a*b\n    e = a*b + b*a + a*b + p*b*a + a\n    assert e == a + 8*a*b\n    e = a + a\n    assert e == 2*a\n    e = a + b + a\n    assert e == b + 2*a\n    e = a + b*b + a + b*b\n    assert e == 2*a + 2*b**2\n    e = a + Rational(2) + b*b + a + b*b + p\n    assert e == 7 + 2*a + 2*b**2\n    e = (a + b*b + a + b*b)*p\n    assert e == 5*(2*a + 2*b**2)\n    e = (a*b*c + c*b*a + b*a*c)*p\n    assert e == 15*a*b*c\n    e = (a*b*c + c*b*a + b*a*c)*p - Rational(15)*a*b*c\n    assert e == Rational(0)\n    e = Rational(50)*(a - a)\n    assert e == Rational(0)\n    e = b*a - b - a*b + b\n    assert e == Rational(0)\n    e = a*b + c**p\n    assert e == a*b + c**5\n    e = a/b\n    assert e == a*b**(-1)\n    e = a*2*2\n    assert e == 4*a\n    e = 2 + a*2/2\n    assert e == 2 + a\n    e = 2 - a - 2\n    assert e == -a\n    e = 2*a*2\n    assert e == 4*a\n    e = 2/a/2\n    assert e == a**(-1)\n    e = 2**a**2\n    assert e == 2**(a**2)\n    e = -(1 + a)\n    assert e == -1 - a\n    e = S.Half*(1 + a)\n    assert e == S.Half + a/2\n\n\ndef test_div():\n    e = a/b\n    assert e == a*b**(-1)\n    e = a/b + c/2\n    assert e == a*b**(-1) + Rational(1)/2*c\n    e = (1 - b)/(b - 1)\n    assert e == (1 + -b)*((-1) + b)**(-1)\n\n\ndef test_pow_arit():\n    n1 = Rational(1)\n    n2 = Rational(2)\n    n5 = Rational(5)\n    e = a*a\n    assert e == a**2\n    e = a*a*a\n    assert e == a**3\n    e = a*a*a*a**Rational(6)\n    assert e == a**9\n    e = a*a*a*a**Rational(6) - a**Rational(9)\n    assert e == Rational(0)\n    e = a**(b - b)\n    assert e == Rational(1)\n    e = (a + Rational(1) - a)**b\n    assert e == Rational(1)\n\n    e = (a + b + c)**n2\n    assert e == (a + b + c)**2\n    assert e.expand() == 2*b*c + 2*a*c + 2*a*b + a**2 + c**2 + b**2\n\n    e = (a + b)**n2\n    assert e == (a + b)**2\n    assert e.expand() == 2*a*b + a**2 + b**2\n\n    e = (a + b)**(n1/n2)\n    assert e == sqrt(a + b)\n    assert e.expand() == sqrt(a + b)\n\n    n = n5**(n1/n2)\n    assert n == sqrt(5)\n    e = n*a*b - n*b*a\n    assert e == Rational(0)\n    e = n*a*b + n*b*a\n    assert e == 2*a*b*sqrt(5)\n    assert e.diff(a) == 2*b*sqrt(5)\n    assert e.diff(a) == 2*b*sqrt(5)\n    e = a/b**2\n    assert e == a*b**(-2)\n\n    assert sqrt(2*(1 + sqrt(2))) == (2*(1 + 2**S.Half))**S.Half\n\n    x = Symbol('x')\n    y = Symbol('y')\n\n    assert ((x*y)**3).expand() == y**3 * x**3\n    assert ((x*y)**-3).expand() == y**-3 * x**-3\n\n    assert (x**5*(3*x)**(3)).expand() == 27 * x**8\n    assert (x**5*(-3*x)**(3)).expand() == -27 * x**8\n    assert (x**5*(3*x)**(-3)).expand() == x**2 * Rational(1, 27)\n    assert (x**5*(-3*x)**(-3)).expand() == x**2 * Rational(-1, 27)\n\n    # expand_power_exp\n    _x = Symbol('x', zero=False)\n    _y = Symbol('y', zero=False)\n    assert (_x**(y**(x + exp(x + y)) + z)).expand(deep=False) == \\\n        _x**z*_x**(y**(x + exp(x + y)))\n    assert (_x**(_y**(x + exp(x + y)) + z)).expand() == \\\n        _x**z*_x**(_y**x*_y**(exp(x)*exp(y)))\n\n    n = Symbol('n', even=False)\n    k = Symbol('k', even=True)\n    o = Symbol('o', odd=True)\n\n    assert unchanged(Pow, -1, x)\n    assert unchanged(Pow, -1, n)\n    assert (-2)**k == 2**k\n    assert (-1)**k == 1\n    assert (-1)**o == -1\n\n\ndef test_pow2():\n    # x**(2*y) is always (x**y)**2 but is only (x**2)**y if\n    #                                  x.is_positive or y.is_integer\n    # let x = 1 to see why the following are not true.\n    assert (-x)**Rational(2, 3) != x**Rational(2, 3)\n    assert (-x)**Rational(5, 7) != -x**Rational(5, 7)\n    assert ((-x)**2)**Rational(1, 3) != ((-x)**Rational(1, 3))**2\n    assert sqrt(x**2) != x\n\n\ndef test_pow3():\n    assert sqrt(2)**3 == 2 * sqrt(2)\n    assert sqrt(2)**3 == sqrt(8)\n\n\ndef test_mod_pow():\n    for s, t, u, v in [(4, 13, 497, 445), (4, -3, 497, 365),\n            (3.2, 2.1, 1.9, 0.1031015682350942), (S(3)/2, 5, S(5)/6, S(3)/32)]:\n        assert pow(S(s), t, u) == v\n        assert pow(S(s), S(t), u) == v\n        assert pow(S(s), t, S(u)) == v\n        assert pow(S(s), S(t), S(u)) == v\n    assert pow(S(2), S(10000000000), S(3)) == 1\n    assert pow(x, y, z) == x**y%z\n    raises(TypeError, lambda: pow(S(4), \"13\", 497))\n    raises(TypeError, lambda: pow(S(4), 13, \"497\"))\n\n\ndef test_pow_E():\n    assert 2**(y/log(2)) == S.Exp1**y\n    assert 2**(y/log(2)/3) == S.Exp1**(y/3)\n    assert 3**(1/log(-3)) != S.Exp1\n    assert (3 + 2*I)**(1/(log(-3 - 2*I) + I*pi)) == S.Exp1\n    assert (4 + 2*I)**(1/(log(-4 - 2*I) + I*pi)) == S.Exp1\n    assert (3 + 2*I)**(1/(log(-3 - 2*I, 3)/2 + I*pi/log(3)/2)) == 9\n    assert (3 + 2*I)**(1/(log(3 + 2*I, 3)/2)) == 9\n    # every time tests are run they will affirm with a different random\n    # value that this identity holds\n    while 1:\n        b = x._random()\n        r, i = b.as_real_imag()\n        if i:\n            break\n    assert verify_numerically(b**(1/(log(-b) + sign(i)*I*pi).n()), S.Exp1)\n\n\ndef test_pow_issue_3516():\n    assert 4**Rational(1, 4) == sqrt(2)\n\n\ndef test_pow_im():\n    for m in (-2, -1, 2):\n        for d in (3, 4, 5):\n            b = m*I\n            for i in range(1, 4*d + 1):\n                e = Rational(i, d)\n                assert (b**e - b.n()**e.n()).n(2, chop=1e-10) == 0\n\n    e = Rational(7, 3)\n    assert (2*x*I)**e == 4*2**Rational(1, 3)*(I*x)**e  # same as Wolfram Alpha\n    im = symbols('im', imaginary=True)\n    assert (2*im*I)**e == 4*2**Rational(1, 3)*(I*im)**e\n\n    args = [I, I, I, I, 2]\n    e = Rational(1, 3)\n    ans = 2**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    args = [I, I, I, 2]\n    e = Rational(1, 3)\n    ans = 2**e*(-I)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    args.append(-3)\n    ans = (6*I)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    args.append(-1)\n    ans = (-6*I)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n\n    args = [I, I, 2]\n    e = Rational(1, 3)\n    ans = (-2)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    args.append(-3)\n    ans = (6)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    args.append(-1)\n    ans = (-6)**e\n    assert Mul(*args, evaluate=False)**e == ans\n    assert Mul(*args)**e == ans\n    assert Mul(Pow(-1, Rational(3, 2), evaluate=False), I, I) == I\n    assert Mul(I*Pow(I, S.Half, evaluate=False)) == sqrt(I)*I\n\n\ndef test_real_mul():\n    assert Float(0) * pi * x == 0\n    assert set((Float(1) * pi * x).args) == {Float(1), pi, x}\n\n\ndef test_ncmul():\n    A = Symbol(\"A\", commutative=False)\n    B = Symbol(\"B\", commutative=False)\n    C = Symbol(\"C\", commutative=False)\n    assert A*B != B*A\n    assert A*B*C != C*B*A\n    assert A*b*B*3*C == 3*b*A*B*C\n    assert A*b*B*3*C != 3*b*B*A*C\n    assert A*b*B*3*C == 3*A*B*C*b\n\n    assert A + B == B + A\n    assert (A + B)*C != C*(A + B)\n\n    assert C*(A + B)*C != C*C*(A + B)\n\n    assert A*A == A**2\n    assert (A + B)*(A + B) == (A + B)**2\n\n    assert A**-1 * A == 1\n    assert A/A == 1\n    assert A/(A**2) == 1/A\n\n    assert A/(1 + A) == A/(1 + A)\n\n    assert set((A + B + 2*(A + B)).args) == \\\n        {A, B, 2*(A + B)}\n\n\ndef test_mul_add_identity():\n    m = Mul(1, 2)\n    assert isinstance(m, Rational) and m.p == 2 and m.q == 1\n    m = Mul(1, 2, evaluate=False)\n    assert isinstance(m, Mul) and m.args == (1, 2)\n    m = Mul(0, 1)\n    assert m is S.Zero\n    m = Mul(0, 1, evaluate=False)\n    assert isinstance(m, Mul) and m.args == (0, 1)\n    m = Add(0, 1)\n    assert m is S.One\n    m = Add(0, 1, evaluate=False)\n    assert isinstance(m, Add) and m.args == (0, 1)\n\n\ndef test_ncpow():\n    x = Symbol('x', commutative=False)\n    y = Symbol('y', commutative=False)\n    z = Symbol('z', commutative=False)\n    a = Symbol('a')\n    b = Symbol('b')\n    c = Symbol('c')\n\n    assert (x**2)*(y**2) != (y**2)*(x**2)\n    assert (x**-2)*y != y*(x**2)\n    assert 2**x*2**y != 2**(x + y)\n    assert 2**x*2**y*2**z != 2**(x + y + z)\n    assert 2**x*2**(2*x) == 2**(3*x)\n    assert 2**x*2**(2*x)*2**x == 2**(4*x)\n    assert exp(x)*exp(y) != exp(y)*exp(x)\n    assert exp(x)*exp(y)*exp(z) != exp(y)*exp(x)*exp(z)\n    assert exp(x)*exp(y)*exp(z) != exp(x + y + z)\n    assert x**a*x**b != x**(a + b)\n    assert x**a*x**b*x**c != x**(a + b + c)\n    assert x**3*x**4 == x**7\n    assert x**3*x**4*x**2 == x**9\n    assert x**a*x**(4*a) == x**(5*a)\n    assert x**a*x**(4*a)*x**a == x**(6*a)\n\n\ndef test_powerbug():\n    x = Symbol(\"x\")\n    assert x**1 != (-x)**1\n    assert x**2 == (-x)**2\n    assert x**3 != (-x)**3\n    assert x**4 == (-x)**4\n    assert x**5 != (-x)**5\n    assert x**6 == (-x)**6\n\n    assert x**128 == (-x)**128\n    assert x**129 != (-x)**129\n\n    assert (2*x)**2 == (-2*x)**2\n\n\ndef test_Mul_doesnt_expand_exp():\n    x = Symbol('x')\n    y = Symbol('y')\n    assert unchanged(Mul, exp(x), exp(y))\n    assert unchanged(Mul, 2**x, 2**y)\n    assert x**2*x**3 == x**5\n    assert 2**x*3**x == 6**x\n    assert x**(y)*x**(2*y) == x**(3*y)\n    assert sqrt(2)*sqrt(2) == 2\n    assert 2**x*2**(2*x) == 2**(3*x)\n    assert sqrt(2)*2**Rational(1, 4)*5**Rational(3, 4) == 10**Rational(3, 4)\n    assert (x**(-log(5)/log(3))*x)/(x*x**( - log(5)/log(3))) == sympify(1)\n\n\ndef test_Mul_is_integer():\n    k = Symbol('k', integer=True)\n    n = Symbol('n', integer=True)\n    nr = Symbol('nr', rational=False)\n    ir = Symbol('ir', irrational=True)\n    nz = Symbol('nz', integer=True, zero=False)\n    e = Symbol('e', even=True)\n    o = Symbol('o', odd=True)\n    i2 = Symbol('2', prime=True, even=True)\n\n    assert (k/3).is_integer is None\n    assert (nz/3).is_integer is None\n    assert (nr/3).is_integer is False\n    assert (ir/3).is_integer is False\n    assert (x*k*n).is_integer is None\n    assert (e/2).is_integer is True\n    assert (e**2/2).is_integer is True\n    assert (2/k).is_integer is None\n    assert (2/k**2).is_integer is None\n    assert ((-1)**k*n).is_integer is True\n    assert (3*k*e/2).is_integer is True\n    assert (2*k*e/3).is_integer is None\n    assert (e/o).is_integer is None\n    assert (o/e).is_integer is False\n    assert (o/i2).is_integer is False\n    assert Mul(k, 1/k, evaluate=False).is_integer is None\n    assert Mul(2., S.Half, evaluate=False).is_integer is None\n    assert (2*sqrt(k)).is_integer is None\n    assert (2*k**n).is_integer is None\n\n    s = 2**2**2**Pow(2, 1000, evaluate=False)\n    m = Mul(s, s, evaluate=False)\n    assert m.is_integer\n\n    # broken in 1.6 and before, see #20161\n    xq = Symbol('xq', rational=True)\n    yq = Symbol('yq', rational=True)\n    assert (xq*yq).is_integer is None\n    e_20161 = Mul(-1,Mul(1,Pow(2,-1,evaluate=False),evaluate=False),evaluate=False)\n    assert e_20161.is_integer is not True # expand(e_20161) -> -1/2, but no need to see that in the assumption without evaluation\n\n\ndef test_Add_Mul_is_integer():\n    x = Symbol('x')\n\n    k = Symbol('k', integer=True)\n    n = Symbol('n', integer=True)\n    nk = Symbol('nk', integer=False)\n    nr = Symbol('nr', rational=False)\n    nz = Symbol('nz', integer=True, zero=False)\n\n    assert (-nk).is_integer is None\n    assert (-nr).is_integer is False\n    assert (2*k).is_integer is True\n    assert (-k).is_integer is True\n\n    assert (k + nk).is_integer is False\n    assert (k + n).is_integer is True\n    assert (k + x).is_integer is None\n    assert (k + n*x).is_integer is None\n    assert (k + n/3).is_integer is None\n    assert (k + nz/3).is_integer is None\n    assert (k + nr/3).is_integer is False\n\n    assert ((1 + sqrt(3))*(-sqrt(3) + 1)).is_integer is not False\n    assert (1 + (1 + sqrt(3))*(-sqrt(3) + 1)).is_integer is not False\n\n\ndef test_Add_Mul_is_finite():\n    x = Symbol('x', extended_real=True, finite=False)\n\n    assert sin(x).is_finite is True\n    assert (x*sin(x)).is_finite is None\n    assert (x*atan(x)).is_finite is False\n    assert (1024*sin(x)).is_finite is True\n    assert (sin(x)*exp(x)).is_finite is None\n    assert (sin(x)*cos(x)).is_finite is True\n    assert (x*sin(x)*exp(x)).is_finite is None\n\n    assert (sin(x) - 67).is_finite is True\n    assert (sin(x) + exp(x)).is_finite is not True\n    assert (1 + x).is_finite is False\n    assert (1 + x**2 + (1 + x)*(1 - x)).is_finite is None\n    assert (sqrt(2)*(1 + x)).is_finite is False\n    assert (sqrt(2)*(1 + x)*(1 - x)).is_finite is False\n\n\ndef test_Mul_is_even_odd():\n    x = Symbol('x', integer=True)\n    y = Symbol('y', integer=True)\n\n    k = Symbol('k', odd=True)\n    n = Symbol('n', odd=True)\n    m = Symbol('m', even=True)\n\n    assert (2*x).is_even is True\n    assert (2*x).is_odd is False\n\n    assert (3*x).is_even is None\n    assert (3*x).is_odd is None\n\n    assert (k/3).is_integer is None\n    assert (k/3).is_even is None\n    assert (k/3).is_odd is None",
+    "truncated": true,
+    "line_count": 2489
+  },
+  "related_test:.venv/lib/python3.14/site-packages/sympy/core/tests/test_expand.py": {
+    "path": ".venv/lib/python3.14/site-packages/sympy/core/tests/test_expand.py",
+    "covers": [
+      "ftl_code_expert/prompts/verify.py"
+    ],
+    "symbols_referenced": [
+      "verify"
+    ],
+    "content": "from sympy.core.expr import unchanged\nfrom sympy.core.mul import Mul\nfrom sympy.core.numbers import (I, Rational as R, pi)\nfrom sympy.core.power import Pow\nfrom sympy.core.singleton import S\nfrom sympy.core.symbol import Symbol\nfrom sympy.functions.combinatorial.factorials import factorial\nfrom sympy.functions.elementary.exponential import (exp, log)\nfrom sympy.functions.elementary.miscellaneous import sqrt\nfrom sympy.functions.elementary.trigonometric import (cos, sin)\nfrom sympy.series.order import O\nfrom sympy.simplify.radsimp import expand_numer\nfrom sympy.core.function import (expand, expand_multinomial,\n    expand_power_base, expand_log)\n\nfrom sympy.testing.pytest import raises\nfrom sympy.core.random import verify_numerically\n\nfrom sympy.abc import x, y, z\n\n\ndef test_expand_no_log():\n    assert (\n        (1 + log(x**4))**2).expand(log=False) == 1 + 2*log(x**4) + log(x**4)**2\n    assert ((1 + log(x**4))*(1 + log(x**3))).expand(\n        log=False) == 1 + log(x**4) + log(x**3) + log(x**4)*log(x**3)\n\n\ndef test_expand_no_multinomial():\n    assert ((1 + x)*(1 + (1 + x)**4)).expand(multinomial=False) == \\\n        1 + x + (1 + x)**4 + x*(1 + x)**4\n\n\ndef test_expand_negative_integer_powers():\n    expr = (x + y)**(-2)\n    assert expr.expand() == 1 / (2*x*y + x**2 + y**2)\n    assert expr.expand(multinomial=False) == (x + y)**(-2)\n    expr = (x + y)**(-3)\n    assert expr.expand() == 1 / (3*x*x*y + 3*x*y*y + x**3 + y**3)\n    assert expr.expand(multinomial=False) == (x + y)**(-3)\n    expr = (x + y)**(2) * (x + y)**(-4)\n    assert expr.expand() == 1 / (2*x*y + x**2 + y**2)\n    assert expr.expand(multinomial=False) == (x + y)**(-2)\n\n\ndef test_expand_non_commutative():\n    A = Symbol('A', commutative=False)\n    B = Symbol('B', commutative=False)\n    C = Symbol('C', commutative=False)\n    a = Symbol('a')\n    b = Symbol('b')\n    i = Symbol('i', integer=True)\n    n = Symbol('n', negative=True)\n    m = Symbol('m', negative=True)\n    p = Symbol('p', polar=True)\n    np = Symbol('p', polar=False)\n\n    assert (C*(A + B)).expand() == C*A + C*B\n    assert (C*(A + B)).expand() != A*C + B*C\n    assert ((A + B)**2).expand() == A**2 + A*B + B*A + B**2\n    assert ((A + B)**3).expand() == (A**2*B + B**2*A + A*B**2 + B*A**2 +\n                                     A**3 + B**3 + A*B*A + B*A*B)\n    # issue 6219\n    assert ((a*A*B*A**-1)**2).expand() == a**2*A*B**2/A\n    # Note that (a*A*B*A**-1)**2 is automatically converted to a**2*(A*B*A**-1)**2\n    assert ((a*A*B*A**-1)**2).expand(deep=False) == a**2*(A*B*A**-1)**2\n    assert ((a*A*B*A**-1)**2).expand() == a**2*(A*B**2*A**-1)\n    assert ((a*A*B*A**-1)**2).expand(force=True) == a**2*A*B**2*A**(-1)\n    assert ((a*A*B)**2).expand() == a**2*A*B*A*B\n    assert ((a*A)**2).expand() == a**2*A**2\n    assert ((a*A*B)**i).expand() == a**i*(A*B)**i\n    assert ((a*A*(B*(A*B/A)**2))**i).expand() == a**i*(A*B*A*B**2/A)**i\n    # issue 6558\n    assert (A*B*(A*B)**-1).expand() == 1\n    assert ((a*A)**i).expand() == a**i*A**i\n    assert ((a*A*B*A**-1)**3).expand() == a**3*A*B**3/A\n    assert ((a*A*B*A*B/A)**3).expand() == \\\n        a**3*A*B*(A*B**2)*(A*B**2)*A*B*A**(-1)\n    assert ((a*A*B*A*B/A)**-2).expand() == \\\n        A*B**-1*A**-1*B**-2*A**-1*B**-1*A**-1/a**2\n    assert ((a*b*A*B*A**-1)**i).expand() == a**i*b**i*(A*B/A)**i\n    assert ((a*(a*b)**i)**i).expand() == a**i*a**(i**2)*b**(i**2)\n    e = Pow(Mul(a, 1/a, A, B, evaluate=False), S(2), evaluate=False)\n    assert e.expand() == A*B*A*B\n    assert sqrt(a*(A*b)**i).expand() == sqrt(a*b**i*A**i)\n    assert (sqrt(-a)**a).expand() == sqrt(-a)**a\n    assert expand((-2*n)**(i/3)) == 2**(i/3)*(-n)**(i/3)\n    assert expand((-2*n*m)**(i/a)) == (-2)**(i/a)*(-n)**(i/a)*(-m)**(i/a)\n    assert expand((-2*a*p)**b) == 2**b*p**b*(-a)**b\n    assert expand((-2*a*np)**b) == 2**b*(-a*np)**b\n    assert expand(sqrt(A*B)) == sqrt(A*B)\n    assert expand(sqrt(-2*a*b)) == sqrt(2)*sqrt(-a*b)\n\n\ndef test_expand_radicals():\n    a = (x + y)**R(1, 2)\n\n    assert (a**1).expand() == a\n    assert (a**3).expand() == x*a + y*a\n    assert (a**5).expand() == x**2*a + 2*x*y*a + y**2*a\n\n    assert (1/a**1).expand() == 1/a\n    assert (1/a**3).expand() == 1/(x*a + y*a)\n    assert (1/a**5).expand() == 1/(x**2*a + 2*x*y*a + y**2*a)\n\n    a = (x + y)**R(1, 3)\n\n    assert (a**1).expand() == a\n    assert (a**2).expand() == a**2\n    assert (a**4).expand() == x*a + y*a\n    assert (a**5).expand() == x*a**2 + y*a**2\n    assert (a**7).expand() == x**2*a + 2*x*y*a + y**2*a\n\n\ndef test_expand_modulus():\n    assert ((x + y)**11).expand(modulus=11) == x**11 + y**11\n    assert ((x + sqrt(2)*y)**11).expand(modulus=11) == x**11 + 10*sqrt(2)*y**11\n    assert (x + y/2).expand(modulus=1) == y/2\n\n    raises(ValueError, lambda: ((x + y)**11).expand(modulus=0))\n    raises(ValueError, lambda: ((x + y)**11).expand(modulus=x))\n\n\ndef test_issue_5743():\n    assert (x*sqrt(\n        x + y)*(1 + sqrt(x + y))).expand() == x**2 + x*y + x*sqrt(x + y)\n    assert (x*sqrt(\n        x + y)*(1 + x*sqrt(x + y))).expand() == x**3 + x**2*y + x*sqrt(x + y)\n\n\ndef test_expand_frac():\n    assert expand((x + y)*y/x/(x + 1), frac=True) == \\\n        (x*y + y**2)/(x**2 + x)\n    assert expand((x + y)*y/x/(x + 1), numer=True) == \\\n        (x*y + y**2)/(x*(x + 1))\n    assert expand((x + y)*y/x/(x + 1), denom=True) == \\\n        y*(x + y)/(x**2 + x)\n    eq = (x + 1)**2/y\n    assert expand_numer(eq, multinomial=False) == eq\n    # issue 26329\n    eq = (exp(x*z) - exp(y*z))/exp(z*(x + y))\n    ans = exp(-y*z) - exp(-x*z)\n    assert eq.expand(numer=True) != ans\n    assert eq.expand(numer=True, exact=True) == ans\n    assert expand_numer(eq) != ans\n    assert expand_numer(eq, exact=True) == ans\n\n\ndef test_issue_6121():\n    eq = -I*exp(-3*I*pi/4)/(4*pi**(S(3)/2)*sqrt(x))\n    assert eq.expand(complex=True)  # does not give oo recursion\n    eq = -I*exp(-3*I*pi/4)/(4*pi**(R(3, 2))*sqrt(x))\n    assert eq.expand(complex=True)  # does not give oo recursion\n\n\ndef test_expand_power_base():\n    assert expand_power_base((x*y*z)**4) == x**4*y**4*z**4\n    assert expand_power_base((x*y*z)**x).is_Pow\n    assert expand_power_base((x*y*z)**x, force=True) == x**x*y**x*z**x\n    assert expand_power_base((x*(y*z)**2)**3) == x**3*y**6*z**6\n\n    assert expand_power_base((sin((x*y)**2)*y)**z).is_Pow\n    assert expand_power_base(\n        (sin((x*y)**2)*y)**z, force=True) == sin((x*y)**2)**z*y**z\n    assert expand_power_base(\n        (sin((x*y)**2)*y)**z, deep=True) == (sin(x**2*y**2)*y)**z\n\n    assert expand_power_base(exp(x)**2) == exp(2*x)\n    assert expand_power_base((exp(x)*exp(y))**2) == exp(2*x)*exp(2*y)\n\n    assert expand_power_base(\n        (exp((x*y)**z)*exp(y))**2) == exp(2*(x*y)**z)*exp(2*y)\n    assert expand_power_base((exp((x*y)**z)*exp(\n        y))**2, deep=True, force=True) == exp(2*x**z*y**z)*exp(2*y)\n\n    assert expand_power_base((exp(x)*exp(y))**z).is_Pow\n    assert expand_power_base(\n        (exp(x)*exp(y))**z, force=True) == exp(x)**z*exp(y)**z\n\n\ndef test_expand_arit():\n    a = Symbol(\"a\")\n    b = Symbol(\"b\", positive=True)\n    c = Symbol(\"c\")\n\n    p = R(5)\n    e = (a + b)*c\n    assert e == c*(a + b)\n    assert (e.expand() - a*c - b*c) == R(0)\n    e = (a + b)*(a + b)\n    assert e == (a + b)**2\n    assert e.expand() == 2*a*b + a**2 + b**2\n    e = (a + b)*(a + b)**R(2)\n    assert e == (a + b)**3\n    assert e.expand() == 3*b*a**2 + 3*a*b**2 + a**3 + b**3\n    assert e.expand() == 3*b*a**2 + 3*a*b**2 + a**3 + b**3\n    e = (a + b)*(a + c)*(b + c)\n    assert e == (a + c)*(a + b)*(b + c)\n    assert e.expand() == 2*a*b*c + b*a**2 + c*a**2 + b*c**2 + a*c**2 + c*b**2 + a*b**2\n    e = (a + R(1))**p\n    assert e == (1 + a)**5\n    assert e.expand() == 1 + 5*a + 10*a**2 + 10*a**3 + 5*a**4 + a**5\n    e = (a + b + c)*(a + c + p)\n    assert e == (5 + a + c)*(a + b + c)\n    assert e.expand() == 5*a + 5*b + 5*c + 2*a*c + b*c + a*b + a**2 + c**2\n    x = Symbol(\"x\")\n    s = exp(x*x) - 1\n    e = s.nseries(x, 0, 6)/x**2\n    assert e.expand() == 1 + x**2/2 + O(x**4)\n\n    e = (x*(y + z))**(x*(y + z))*(x + y)\n    assert e.expand(power_exp=False, power_base=False) == x*(x*y + x*\n                    z)**(x*y + x*z) + y*(x*y + x*z)**(x*y + x*z)\n    assert e.expand(power_exp=False, power_base=False, deep=False) == x* \\\n        (x*(y + z))**(x*(y + z)) + y*(x*(y + z))**(x*(y + z))\n    e = x * (x + (y + 1)**2)\n    assert e.expand(deep=False) == x**2 + x*(y + 1)**2\n    e = (x*(y + z))**z\n    assert e.expand(power_base=True, mul=True, deep=True) in [x**z*(y +\n                    z)**z, (x*y + x*z)**z]\n    assert ((2*y)**z).expand() == 2**z*y**z\n    p = Symbol('p', positive=True)\n    assert sqrt(-x).expand().is_Pow\n    assert sqrt(-x).expand(force=True) == I*sqrt(x)\n    assert ((2*y*p)**z).expand() == 2**z*p**z*y**z\n    assert ((2*y*p*x)**z).expand() == 2**z*p**z*(x*y)**z\n    assert ((2*y*p*x)**z).expand(force=True) == 2**z*p**z*x**z*y**z\n    assert ((2*y*p*-pi)**z).expand() == 2**z*pi**z*p**z*(-y)**z\n    assert ((2*y*p*-pi*x)**z).expand() == 2**z*pi**z*p**z*(-x*y)**z\n    n = Symbol('n', negative=True)\n    m = Symbol('m', negative=True)\n    assert ((-2*x*y*n)**z).expand() == 2**z*(-n)**z*(x*y)**z\n    assert ((-2*x*y*n*m)**z).expand() == 2**z*(-m)**z*(-n)**z*(-x*y)**z\n    # issue 5482\n    assert sqrt(-2*x*n) == sqrt(2)*sqrt(-n)*sqrt(x)\n    # issue 5605 (2)\n    assert (cos(x + y)**2).expand(trig=True) in [\n        (-sin(x)*sin(y) + cos(x)*cos(y))**2,\n        sin(x)**2*sin(y)**2 - 2*sin(x)*sin(y)*cos(x)*cos(y) + cos(x)**2*cos(y)**2\n    ]\n\n    # Check that this isn't too slow\n    x = Symbol('x')\n    W = 1\n    for i in range(1, 21):\n        W = W * (x - i)\n    W = W.expand()\n    assert W.has(-1672280820*x**15)\n\ndef test_expand_mul():\n    # part of issue 20597\n    e = Mul(2, 3, evaluate=False)\n    assert e.expand() == 6\n\n    e = Mul(2, 3, 1/x, evaluate=False)\n    assert e.expand() == 6/x\n    e = Mul(2, R(1, 3), evaluate=False)\n    assert e.expand() == R(2, 3)\n\ndef test_power_expand():\n    \"\"\"Test for Pow.expand()\"\"\"\n    a = Symbol('a')\n    b = Symbol('b')\n    p = (a + b)**2\n    assert p.expand() == a**2 + b**2 + 2*a*b\n\n    p = (1 + 2*(1 + a))**2\n    assert p.expand() == 9 + 4*(a**2) + 12*a\n\n    p = 2**(a + b)\n    assert p.expand() == 2**a*2**b\n\n    A = Symbol('A', commutative=False)\n    B = Symbol('B', commutative=False)\n    assert (2**(A + B)).expand() == 2**(A + B)\n    assert (A**(a + b)).expand() != A**(a + b)\n\n\ndef test_issues_5919_6830():\n    # issue 5919\n    n = -1 + 1/x\n    z = n/x/(-n)**2 - 1/n/x\n    assert expand(z) == 1/(x**2 - 2*x + 1) - 1/(x - 2 + 1/x) - 1/(-x + 1)\n\n    # issue 6830\n    p = (1 + x)**2\n    assert expand_multinomial((1 + x*p)**2) == (\n        x**2*(x**4 + 4*x**3 + 6*x**2 + 4*x + 1) + 2*x*(x**2 + 2*x + 1) + 1)\n    assert expand_multinomial((1 + (y + x)*p)**2) == (\n        2*((x + y)*(x**2 + 2*x + 1)) + (x**2 + 2*x*y + y**2)*\n        (x**4 + 4*x**3 + 6*x**2 + 4*x + 1) + 1)\n    A = Symbol('A', commutative=False)\n    p = (1 + A)**2\n    assert expand_multinomial((1 + x*p)**2) == (\n        x**2*(1 + 4*A + 6*A**2 + 4*A**3 + A**4) + 2*x*(1 + 2*A + A**2) + 1)\n    assert expand_multinomial((1 + (y + x)*p)**2) == (\n        (x + y)*(1 + 2*A + A**2)*2 + (x**2 + 2*x*y + y**2)*\n        (1 + 4*A + 6*A**2 + 4*A**3 + A**4) + 1)\n    assert expand_multinomial((1 + (y + x)*p)**3) == (\n        (x + y)*(1 + 2*A + A**2)*3 + (x**2 + 2*x*y + y**2)*(1 + 4*A +\n        6*A**2 + 4*A**3 + A**4)*3 + (x**3 + 3*x**2*y + 3*x*y**2 + y**3)*(1 + 6*A\n        + 15*A**2 + 20*A**3 + 15*A**4 + 6*A**5 + A**6) + 1)\n    # unevaluate powers\n    eq = (Pow((x + 1)*((A + 1)**2), 2, evaluate=False))\n    # - in this case the base is not an Add so no further\n    #   expansion is done\n    assert expand_multinomial(eq) == \\\n        (x**2 + 2*x + 1)*(1 + 4*A + 6*A**2 + 4*A**3 + A**4)\n    # - but here, the expanded base *is* an Add so it gets expanded\n    eq = (Pow(((A + 1)**2), 2, evaluate=False))\n    assert expand_multinomial(eq) == 1 + 4*A + 6*A**2 + 4*A**3 + A**4\n\n    # coverage\n    def ok(a, b, n):\n        e = (a + I*b)**n\n        return verify_numerically(e, expand_multinomial(e))\n\n    for a in [2, S.Half]:\n        for b in [3, R(1, 3)]:\n            for n in range(2, 6):\n                assert ok(a, b, n)\n\n    assert expand_multinomial((x + 1 + O(z))**2) == \\\n        1 + 2*x + x**2 + O(z)\n    assert expand_multinomial((x + 1 + O(z))**3) == \\\n        1 + 3*x + 3*x**2 + x**3 + O(z)\n\n    assert expand_multinomial(3**(x + y + 3)) == 27*3**(x + y)\n\ndef test_expand_log():\n    t = Symbol('t', positive=True)\n    # after first expansion, -2*log(2) + log(4); then 0 after second\n    assert expand(log(t**2) - log(t**2/4) - 2*log(2)) == 0\n    assert expand_log(log(7*6)/log(6)) == 1 + log(7)/log(6)\n    b = factorial(10)\n    assert expand_log(log(7*b**4)/log(b)\n        ) == 4 + log(7)/log(b)\n\n\ndef test_issue_23952():\n    assert (x**(y + z)).expand(force=True) == x**y*x**z\n    one = Symbol('1', integer=True, prime=True, odd=True, positive=True)\n    two = Symbol('2', integer=True, prime=True, even=True)\n    e = two - one\n    for b in (0, x):\n        # 0**e = 0, 0**-e = zoo; but if expanded then nan\n        assert unchanged(Pow, b, e)  # power_exp\n        assert unchanged(Pow, b, -e)  # power_exp\n        assert unchanged(Pow, b, y - x)  # power_exp\n        assert unchanged(Pow, b, 3 - x)  # multinomial\n        assert (b**e).expand().is_Pow  # power_exp\n        assert (b**-e).expand().is_Pow  # power_exp\n        assert (b**(y - x)).expand().is_Pow  # power_exp\n        assert (b**(3 - x)).expand().is_Pow  # multinomial\n    nn1 = Symbol('nn1', nonnegative=True)\n    nn2 = Symbol('nn2', nonnegative=True)\n    nn3 = Symbol('nn3', nonnegative=True)\n    assert (x**(nn1 + nn2)).expand() == x**nn1*x**nn2\n    assert (x**(-nn1 - nn2)).expand() == x**-nn1*x**-nn2\n    assert unchanged(Pow, x, nn1 + nn2 - nn3)\n    assert unchanged(Pow, x, 1 + nn2 - nn3)\n    assert unchanged(Pow, x, nn1 - nn2)\n    assert unchanged(Pow, x, 1 - nn2)\n    assert unchanged(Pow, x, -1 + nn2)",
+    "truncated": false,
+    "line_count": 364
+  },
+  "related_test:.venv/lib/python3.14/site-packages/sympy/functions/special/tests/test_error_functions.py": {
+    "path": ".venv/lib/python3.14/site-packages/sympy/functions/special/tests/test_error_functions.py",
+    "covers": [
+      "ftl_code_expert/prompts/verify.py"
+    ],
+    "symbols_referenced": [
+      "verify"
+    ],
+    "content": "from sympy.core.function import (diff, expand, expand_func)\nfrom sympy.core import EulerGamma\nfrom sympy.core.numbers import (E, Float, I, Rational, nan, oo, pi)\nfrom sympy.core.singleton import S\nfrom sympy.core.symbol import (Symbol, symbols, Dummy)\nfrom sympy.functions.elementary.complexes import (conjugate, im, polar_lift, re)\nfrom sympy.functions.elementary.exponential import (exp, exp_polar, log)\nfrom sympy.functions.elementary.hyperbolic import (cosh, sinh)\nfrom sympy.functions.elementary.miscellaneous import sqrt\nfrom sympy.functions.elementary.trigonometric import (cos, sin, sinc)\nfrom sympy.functions.special.error_functions import (Chi, Ci, E1, Ei, Li, Shi, Si, erf, erf2, erf2inv, erfc, erfcinv, erfi, erfinv, expint, fresnelc, fresnels, li)\nfrom sympy.functions.special.gamma_functions import (gamma, uppergamma)\nfrom sympy.functions.special.hyper import (hyper, meijerg)\nfrom sympy.integrals.integrals import (Integral, integrate)\nfrom sympy.series.gruntz import gruntz\nfrom sympy.series.limits import limit\nfrom sympy.series.order import O\nfrom sympy.core.expr import unchanged\nfrom sympy.core.function import ArgumentIndexError\nfrom sympy.functions.special.error_functions import _erfs, _eis\nfrom sympy.testing.pytest import raises\n\nx, y, z = symbols('x,y,z')\nw = Symbol(\"w\", real=True)\nn = Symbol(\"n\", integer=True)\nt = Dummy('t')\n\n\ndef test_erf():\n    assert erf(nan) is nan\n\n    assert erf(oo) == 1\n    assert erf(-oo) == -1\n\n    assert erf(0) is S.Zero\n\n    assert erf(I*oo) == oo*I\n    assert erf(-I*oo) == -oo*I\n\n    assert erf(-2) == -erf(2)\n    assert erf(-x*y) == -erf(x*y)\n    assert erf(-x - y) == -erf(x + y)\n\n    assert erf(erfinv(x)) == x\n    assert erf(erfcinv(x)) == 1 - x\n    assert erf(erf2inv(0, x)) == x\n    assert erf(erf2inv(0, x, evaluate=False)) == x # To cover code in erf\n    assert erf(erf2inv(0, erf(erfcinv(1 - erf(erfinv(x)))))) == x\n\n    alpha = symbols('alpha', extended_real=True)\n    assert erf(alpha).is_real is True\n    assert erf(alpha).is_finite is True\n    alpha = symbols('alpha', extended_real=False)\n    assert erf(alpha).is_real is None\n    assert erf(alpha).is_finite is None\n    assert erf(alpha).is_zero is None\n    assert erf(alpha).is_positive is None\n    assert erf(alpha).is_negative is None\n    alpha = symbols('alpha', extended_positive=True)\n    assert erf(alpha).is_positive is True\n    alpha = symbols('alpha', extended_negative=True)\n    assert erf(alpha).is_negative is True\n    assert erf(I).is_real is False\n    assert erf(0, evaluate=False).is_real\n    assert erf(0, evaluate=False).is_zero\n\n    assert conjugate(erf(z)) == erf(conjugate(z))\n\n    assert erf(x).as_leading_term(x) == 2*x/sqrt(pi)\n    assert erf(x*y).as_leading_term(y) == 2*x*y/sqrt(pi)\n    assert (erf(x*y)/erf(y)).as_leading_term(y) == x\n    assert erf(1/x).as_leading_term(x) == S.One\n\n    assert erf(z).rewrite('uppergamma') == sqrt(z**2)*(1 - erfc(sqrt(z**2)))/z\n    assert erf(z).rewrite('erfc') == S.One - erfc(z)\n    assert erf(z).rewrite('erfi') == -I*erfi(I*z)\n    assert erf(z).rewrite('fresnels') == (1 + I)*(fresnelc(z*(1 - I)/sqrt(pi)) -\n        I*fresnels(z*(1 - I)/sqrt(pi)))\n    assert erf(z).rewrite('fresnelc') == (1 + I)*(fresnelc(z*(1 - I)/sqrt(pi)) -\n        I*fresnels(z*(1 - I)/sqrt(pi)))\n    assert erf(z).rewrite('hyper') == 2*z*hyper([S.Half], [3*S.Half], -z**2)/sqrt(pi)\n    assert erf(z).rewrite('meijerg') == z*meijerg([S.Half], [], [0], [Rational(-1, 2)], z**2)/sqrt(pi)\n    assert erf(z).rewrite('expint') == sqrt(z**2)/z - z*expint(S.Half, z**2)/sqrt(S.Pi)\n\n    assert limit(exp(x)*exp(x**2)*(erf(x + 1/exp(x)) - erf(x)), x, oo) == \\\n        2/sqrt(pi)\n    assert limit((1 - erf(z))*exp(z**2)*z, z, oo) == 1/sqrt(pi)\n    assert limit((1 - erf(x))*exp(x**2)*sqrt(pi)*x, x, oo) == 1\n    assert limit(((1 - erf(x))*exp(x**2)*sqrt(pi)*x - 1)*2*x**2, x, oo) == -1\n    assert limit(erf(x)/x, x, 0) == 2/sqrt(pi)\n    assert limit(x**(-4) - sqrt(pi)*erf(x**2) / (2*x**6), x, 0) == S(1)/3\n\n    assert erf(x).as_real_imag() == \\\n        (erf(re(x) - I*im(x))/2 + erf(re(x) + I*im(x))/2,\n         -I*(-erf(re(x) - I*im(x)) + erf(re(x) + I*im(x)))/2)\n\n    assert erf(x).as_real_imag(deep=False) == \\\n        (erf(re(x) - I*im(x))/2 + erf(re(x) + I*im(x))/2,\n         -I*(-erf(re(x) - I*im(x)) + erf(re(x) + I*im(x)))/2)\n\n    assert erf(w).as_real_imag() == (erf(w), 0)\n    assert erf(w).as_real_imag(deep=False) == (erf(w), 0)\n    # issue 13575\n    assert erf(I).as_real_imag() == (0, -I*erf(I))\n\n    raises(ArgumentIndexError, lambda: erf(x).fdiff(2))\n\n    assert erf(x).inverse() == erfinv\n\n\ndef test_erf_series():\n    assert erf(x).series(x, 0, 7) == 2*x/sqrt(pi) - \\\n        2*x**3/3/sqrt(pi) + x**5/5/sqrt(pi) + O(x**7)\n\n    assert erf(x).series(x, oo) == \\\n        -exp(-x**2)*(3/(4*x**5) - 1/(2*x**3) + 1/x + O(x**(-6), (x, oo)))/sqrt(pi) + 1\n    assert erf(x**2).series(x, oo, n=8) == \\\n        (-1/(2*x**6) + x**(-2) + O(x**(-8), (x, oo)))*exp(-x**4)/sqrt(pi)*-1 + 1\n    assert erf(sqrt(x)).series(x, oo, n=3) == (sqrt(1/x) - (1/x)**(S(3)/2)/2\\\n        + 3*(1/x)**(S(5)/2)/4 + O(x**(-3), (x, oo)))*exp(-x)/sqrt(pi)*-1 + 1\n\n\ndef test_erf_evalf():\n    assert abs( erf(Float(2.0)) - 0.995322265 ) < 1E-8 # XXX\n\n\ndef test__erfs():\n    assert _erfs(z).diff(z) == -2/sqrt(S.Pi) + 2*z*_erfs(z)\n\n    assert _erfs(1/z).series(z) == \\\n        z/sqrt(pi) - z**3/(2*sqrt(pi)) + 3*z**5/(4*sqrt(pi)) + O(z**6)\n\n    assert expand(erf(z).rewrite('tractable').diff(z).rewrite('intractable')) \\\n        == erf(z).diff(z)\n    assert _erfs(z).rewrite(\"intractable\") == (-erf(z) + 1)*exp(z**2)\n    raises(ArgumentIndexError, lambda: _erfs(z).fdiff(2))\n\n\ndef test_erfc():\n    assert erfc(nan) is nan\n\n    assert erfc(oo) is S.Zero\n    assert erfc(-oo) == 2\n\n    assert erfc(0) == 1\n\n    assert erfc(I*oo) == -oo*I\n    assert erfc(-I*oo) == oo*I\n\n    assert erfc(-x) == S(2) - erfc(x)\n    assert erfc(erfcinv(x)) == x\n\n    alpha = symbols('alpha', extended_real=True)\n    assert erfc(alpha).is_real is True\n    alpha = symbols('alpha', extended_real=False)\n    assert erfc(alpha).is_real is None\n    assert erfc(I).is_real is False\n    assert erfc(0, evaluate=False).is_real\n    assert erfc(0, evaluate=False).is_zero is False\n\n    assert erfc(erfinv(x)) == 1 - x\n\n    assert conjugate(erfc(z)) == erfc(conjugate(z))\n\n    assert erfc(x).as_leading_term(x) is S.One\n    assert erfc(1/x).as_leading_term(x) == S.Zero\n\n    assert erfc(z).rewrite('erf') == 1 - erf(z)\n    assert erfc(z).rewrite('erfi') == 1 + I*erfi(I*z)\n    assert erfc(z).rewrite('fresnels') == 1 - (1 + I)*(fresnelc(z*(1 - I)/sqrt(pi)) -\n        I*fresnels(z*(1 - I)/sqrt(pi)))\n    assert erfc(z).rewrite('fresnelc') == 1 - (1 + I)*(fresnelc(z*(1 - I)/sqrt(pi)) -\n        I*fresnels(z*(1 - I)/sqrt(pi)))\n    assert erfc(z).rewrite('hyper') == 1 - 2*z*hyper([S.Half], [3*S.Half], -z**2)/sqrt(pi)\n    assert erfc(z).rewrite('meijerg') == 1 - z*meijerg([S.Half], [], [0], [Rational(-1, 2)], z**2)/sqrt(pi)\n    assert erfc(z).rewrite('uppergamma') == 1 - sqrt(z**2)*(1 - erfc(sqrt(z**2)))/z\n    assert erfc(z).rewrite('expint') == S.One - sqrt(z**2)/z + z*expint(S.Half, z**2)/sqrt(S.Pi)\n    assert erfc(z).rewrite('tractable') == _erfs(z)*exp(-z**2)\n    assert expand_func(erf(x) + erfc(x)) is S.One\n\n    assert erfc(x).as_real_imag() == \\\n        (erfc(re(x) - I*im(x))/2 + erfc(re(x) + I*im(x))/2,\n         -I*(-erfc(re(x) - I*im(x)) + erfc(re(x) + I*im(x)))/2)\n\n    assert erfc(x).as_real_imag(deep=False) == \\\n        (erfc(re(x) - I*im(x))/2 + erfc(re(x) + I*im(x))/2,\n         -I*(-erfc(re(x) - I*im(x)) + erfc(re(x) + I*im(x)))/2)\n\n    assert erfc(w).as_real_imag() == (erfc(w), 0)\n    assert erfc(w).as_real_imag(deep=False) == (erfc(w), 0)\n    raises(ArgumentIndexError, lambda: erfc(x).fdiff(2))\n\n    assert erfc(x).inverse() == erfcinv\n\n\ndef test_erfc_series():\n    assert erfc(x).series(x, 0, 7) == 1 - 2*x/sqrt(pi) + \\\n        2*x**3/3/sqrt(pi) - x**5/5/sqrt(pi) + O(x**7)\n\n    assert erfc(x).series(x, oo) == \\\n            (3/(4*x**5) - 1/(2*x**3) + 1/x + O(x**(-6), (x, oo)))*exp(-x**2)/sqrt(pi)\n\n\ndef test_erfc_evalf():\n    assert abs( erfc(Float(2.0)) - 0.00467773 ) < 1E-8 # XXX\n\n\ndef test_erfi():\n    assert erfi(nan) is nan\n\n    assert erfi(oo) is S.Infinity\n    assert erfi(-oo) is S.NegativeInfinity\n\n    assert erfi(0) is S.Zero\n\n    assert erfi(I*oo) == I\n    assert erfi(-I*oo) == -I\n\n    assert erfi(-x) == -erfi(x)\n\n    assert erfi(I*erfinv(x)) == I*x\n    assert erfi(I*erfcinv(x)) == I*(1 - x)\n    assert erfi(I*erf2inv(0, x)) == I*x\n    assert erfi(I*erf2inv(0, x, evaluate=False)) == I*x # To cover code in erfi\n\n    assert erfi(I).is_real is False\n    assert erfi(0, evaluate=False).is_real\n    assert erfi(0, evaluate=False).is_zero\n\n    assert conjugate(erfi(z)) == erfi(conjugate(z))\n\n    assert erfi(x).as_leading_term(x) == 2*x/sqrt(pi)\n    assert erfi(x*y).as_leading_term(y) == 2*x*y/sqrt(pi)\n    assert (erfi(x*y)/erfi(y)).as_leading_term(y) == x\n    assert erfi(1/x).as_leading_term(x) == erfi(1/x)\n\n    assert erfi(z).rewrite('erf') == -I*erf(I*z)\n    assert erfi(z).rewrite('erfc') == I*erfc(I*z) - I\n    assert erfi(z).rewrite('fresnels') == (1 - I)*(fresnelc(z*(1 + I)/sqrt(pi)) -\n        I*fresnels(z*(1 + I)/sqrt(pi)))\n    assert erfi(z).rewrite('fresnelc') == (1 - I)*(fresnelc(z*(1 + I)/sqrt(pi)) -\n        I*fresnels(z*(1 + I)/sqrt(pi)))\n    assert erfi(z).rewrite('hyper') == 2*z*hyper([S.Half], [3*S.Half], z**2)/sqrt(pi)\n    assert erfi(z).rewrite('meijerg') == z*meijerg([S.Half], [], [0], [Rational(-1, 2)], -z**2)/sqrt(pi)\n    assert erfi(z).rewrite('uppergamma') == (sqrt(-z**2)/z*(uppergamma(S.Half,\n        -z**2)/sqrt(S.Pi) - S.One))\n    assert erfi(z).rewrite('expint') == sqrt(-z**2)/z - z*expint(S.Half, -z**2)/sqrt(S.Pi)\n    assert erfi(z).rewrite('tractable') == -I*(-_erfs(I*z)*exp(z**2) + 1)\n    assert expand_func(erfi(I*z)) == I*erf(z)\n\n    assert erfi(x).as_real_imag() == \\\n        (erfi(re(x) - I*im(x))/2 + erfi(re(x) + I*im(x))/2,\n         -I*(-erfi(re(x) - I*im(x)) + erfi(re(x) + I*im(x)))/2)\n    assert erfi(x).as_real_imag(deep=False) == \\\n        (erfi(re(x) - I*im(x))/2 + erfi(re(x) + I*im(x))/2,\n         -I*(-erfi(re(x) - I*im(x)) + erfi(re(x) + I*im(x)))/2)\n\n    assert erfi(w).as_real_imag() == (erfi(w), 0)\n    assert erfi(w).as_real_imag(deep=False) == (erfi(w), 0)\n\n    raises(ArgumentIndexError, lambda: erfi(x).fdiff(2))\n\n\ndef test_erfi_series():\n    assert erfi(x).series(x, 0, 7) == 2*x/sqrt(pi) + \\\n        2*x**3/3/sqrt(pi) + x**5/5/sqrt(pi) + O(x**7)\n\n    assert erfi(x).series(x, oo) == \\\n        (3/(4*x**5) + 1/(2*x**3) + 1/x + O(x**(-6), (x, oo)))*exp(x**2)/sqrt(pi) - I\n\n\ndef test_erfi_evalf():\n    assert abs( erfi(Float(2.0)) - 18.5648024145756 ) < 1E-13  # XXX\n\n\ndef test_erf2():\n\n    assert erf2(0, 0) is S.Zero\n    assert erf2(x, x) is S.Zero\n    assert erf2(nan, 0) is nan\n\n    assert erf2(-oo,  y) ==  erf(y) + 1\n    assert erf2( oo,  y) ==  erf(y) - 1\n    assert erf2(  x, oo) ==  1 - erf(x)\n    assert erf2(  x,-oo) == -1 - erf(x)\n    assert erf2(x, erf2inv(x, y)) == y\n\n    assert erf2(-x, -y) == -erf2(x,y)\n    assert erf2(-x,  y) == erf(y) + erf(x)\n    assert erf2( x, -y) == -erf(y) - erf(x)\n    assert erf2(x, y).rewrite('fresnels') == erf(y).rewrite(fresnels)-erf(x).rewrite(fresnels)\n    assert erf2(x, y).rewrite('fresnelc') == erf(y).rewrite(fresnelc)-erf(x).rewrite(fresnelc)\n    assert erf2(x, y).rewrite('hyper') == erf(y).rewrite(hyper)-erf(x).rewrite(hyper)\n    assert erf2(x, y).rewrite('meijerg') == erf(y).rewrite(meijerg)-erf(x).rewrite(meijerg)\n    assert erf2(x, y).rewrite('uppergamma') == erf(y).rewrite(uppergamma) - erf(x).rewrite(uppergamma)\n    assert erf2(x, y).rewrite('expint') == erf(y).rewrite(expint)-erf(x).rewrite(expint)\n\n    assert erf2(I, 0).is_real is False\n    assert erf2(0, 0, evaluate=False).is_real\n    assert erf2(0, 0, evaluate=False).is_zero\n    assert erf2(x, x, evaluate=False).is_zero\n    assert erf2(x, y).is_zero is None\n\n    assert expand_func(erf(x) + erf2(x, y)) == erf(y)\n\n    assert conjugate(erf2(x, y)) == erf2(conjugate(x), conjugate(y))\n\n    assert erf2(x, y).rewrite('erf')  == erf(y) - erf(x)\n    assert erf2(x, y).rewrite('erfc') == erfc(x) - erfc(y)\n    assert erf2(x, y).rewrite('erfi') == I*(erfi(I*x) - erfi(I*y))\n\n    assert erf2(x, y).diff(x) == erf2(x, y).fdiff(1)\n    assert erf2(x, y).diff(y) == erf2(x, y).fdiff(2)\n    assert erf2(x, y).diff(x) == -2*exp(-x**2)/sqrt(pi)\n    assert erf2(x, y).diff(y) == 2*exp(-y**2)/sqrt(pi)\n    raises(ArgumentIndexError, lambda: erf2(x, y).fdiff(3))\n\n    assert erf2(x, y).is_extended_real is None\n    xr, yr = symbols('xr yr', extended_real=True)\n    assert erf2(xr, yr).is_extended_real is True\n\n\ndef test_erfinv():\n    assert erfinv(0) is S.Zero\n    assert erfinv(1) is S.Infinity\n    assert erfinv(nan) is S.NaN\n    assert erfinv(-1) is S.NegativeInfinity\n\n    assert erfinv(erf(w)) == w\n    assert erfinv(erf(-w)) == -w\n\n    assert erfinv(x).diff() == sqrt(pi)*exp(erfinv(x)**2)/2\n    raises(ArgumentIndexError, lambda: erfinv(x).fdiff(2))\n\n    assert erfinv(z).rewrite('erfcinv') == erfcinv(1-z)\n    assert erfinv(z).inverse() == erf\n\n\ndef test_erfinv_evalf():\n    assert abs( erfinv(Float(0.2)) - 0.179143454621292 ) < 1E-13\n\n\ndef test_erfcinv():\n    assert erfcinv(1) is S.Zero\n    assert erfcinv(0) is S.Infinity\n    assert erfcinv(0, evaluate=False).is_infinite is True\n    assert erfcinv(2, evaluate=False).is_infinite is True\n    assert erfcinv(nan) is S.NaN\n\n    assert erfcinv(x).diff() == -sqrt(pi)*exp(erfcinv(x)**2)/2\n    raises(ArgumentIndexError, lambda: erfcinv(x).fdiff(2))\n\n    assert erfcinv(z).rewrite('erfinv') == erfinv(1-z)\n    assert erfcinv(z).inverse() == erfc\n\n\ndef test_erf2inv():\n    assert erf2inv(0, 0) is S.Zero\n    assert erf2inv(0, 1) is S.Infinity\n    assert erf2inv(1, 0) is S.One\n    assert erf2inv(0, y) == erfinv(y)\n    assert erf2inv(oo, y) == erfcinv(-y)\n    assert erf2inv(x, 0) == x\n    assert erf2inv(x, oo) == erfinv(x)\n    assert erf2inv(nan, 0) is nan\n    assert erf2inv(0, nan) is nan\n\n    assert erf2inv(x, y).diff(x) == exp(-x**2 + erf2inv(x, y)**2)\n    assert erf2inv(x, y).diff(y) == sqrt(pi)*exp(erf2inv(x, y)**2)/2\n    raises(ArgumentIndexError, lambda: erf2inv(x, y).fdiff(3))\n\n\n# NOTE we multiply by exp_polar(I*pi) and need this to be on the principal\n# branch, hence take x in the lower half plane (d=0).\n\n\ndef mytn(expr1, expr2, expr3, x, d=0):\n    from sympy.core.random import verify_numerically, random_complex_number\n    subs = {}\n    for a in expr1.free_symbols:\n        if a != x:\n            subs[a] = random_complex_number()\n    return expr2 == expr3 and verify_numerically(expr1.subs(subs),\n                                               expr2.subs(subs), x, d=d)\n\n\ndef mytd(expr1, expr2, x):\n    from sympy.core.random import test_derivative_numerically, \\\n        random_complex_number\n    subs = {}\n    for a in expr1.free_symbols:\n        if a != x:\n            subs[a] = random_complex_number()\n    return expr1.diff(x) == expr2 and test_derivative_numerically(expr1.subs(subs), x)\n\n\ndef tn_branch(func, s=None):\n    from sympy.core.random import uniform\n\n    def fn(x):\n        if s is None:\n            return func(x)\n        return func(s, x)\n    c = uniform(1, 5)\n    expr = fn(c*exp_polar(I*pi)) - fn(c*exp_polar(-I*pi))\n    eps = 1e-15\n    expr2 = fn(-c + eps*I) - fn(-c - eps*I)\n    return abs(expr.n() - expr2.n()).n() < 1e-10\n\n\ndef test_ei():\n    assert Ei(0) is S.NegativeInfinity\n    assert Ei(oo) is S.Infinity\n    assert Ei(-oo) is S.Zero\n\n    assert tn_branch(Ei)\n    assert mytd(Ei(x), exp(x)/x, x)\n    assert mytn(Ei(x), Ei(x).rewrite(uppergamma),\n                -uppergamma(0, x*polar_lift(-1)) - I*pi, x)\n    assert mytn(Ei(x), Ei(x).rewrite(expint),\n                -expint(1, x*polar_lift(-1)) - I*pi, x)\n    assert Ei(x).rewrite(expint).rewrite(Ei) == Ei(x)\n    assert Ei(x*exp_polar(2*I*pi)) == Ei(x) + 2*I*pi\n    assert Ei(x*exp_polar(-2*I*pi)) == Ei(x) - 2*I*pi\n\n    assert mytn(Ei(x), Ei(x).rewrite(Shi), Chi(x) + Shi(x), x)\n    assert mytn(Ei(x*polar_lift(I)), Ei(x*polar_lift(I)).rewrite(Si),\n                Ci(x) + I*Si(x) + I*pi/2, x)\n\n    assert Ei(log(x)).rewrite(li) == li(x)\n    assert Ei(2*log(x)).rewrite(li) == li(x**2)\n\n    assert gruntz(Ei(x+exp(-x))*exp(-x)*x, x, oo) == 1\n\n    assert Ei(x).series(x) == EulerGamma + log(x) + x + x**2/4 + \\\n        x**3/18 + x**4/96 + x**5/600 + O(x**6)\n    assert Ei(x).series(x, 1, 3) == Ei(1) + E*(x - 1) + O((x - 1)**3, (x, 1))\n    assert Ei(x).series(x, oo) == \\\n        (120/x**5 + 24/x**4 + 6/x**3 + 2/x**2 + 1/x + 1 + O(x**(-6), (x, oo)))*exp(x)/x\n    assert Ei(x).series(x, -oo) == \\\n        (120/x**5 + 24/x**4 + 6/x**3 + 2/x**2 + 1/x + 1 + O(x**(-6), (x, -oo)))*exp(x)/x\n    assert Ei(-x).series(x, oo) == \\\n        -((-120/x**5 + 24/x**4 - 6/x**3 + 2/x**2 - 1/x + 1 + O(x**(-6), (x, oo)))*exp(-x)/x)\n\n    assert str(Ei(cos(2)).evalf(n=10)) == '-0.6760647401'\n    raises(ArgumentIndexError, lambda: Ei(x).fdiff(2))\n\n\ndef test_expint():\n    assert mytn(expint(x, y), expint(x, y).rewrite(uppergamma),\n                y**(x - 1)*uppergamma(1 - x, y), x)\n    assert mytd(\n        expint(x, y), -y**(x - 1)*meijerg([], [1, 1], [0, 0, 1 - x], [], y), x)\n    assert mytd(expint(x, y), -expint(x - 1, y), y)\n    assert mytn(expint(1, x), expint(1, x).rewrite(Ei),\n                -Ei(x*polar_lift(-1)) + I*pi, x)\n\n    assert expint(-4, x) == exp(-x)/x + 4*exp(-x)/x**2 + 12*exp(-x)/x**3 \\\n        + 24*exp(-x)/x**4 + 24*exp(-x)/x**5\n    assert expint(Rational(-3, 2), x) == \\\n        exp(-x)/x + 3*exp(-x)/(2*x**2) + 3*sqrt(pi)*erfc(sqrt(x))/(4*x**S('5/2'))\n\n    assert tn_branch(expint, 1)\n    assert tn_branch(expint, 2)\n    assert tn_branch(expint, 3)\n    assert tn_branch(expint, 1.7)\n    assert tn_branch(expint, pi)\n\n    assert expint(y, x*exp_polar(2*I*pi)) == \\\n        x**(y - 1)*(exp(2*I*pi*y) - 1)*gamma(-y + 1) + expint(y, x)\n    assert expint(y, x*exp_polar(-2*I*pi)) == \\\n        x**(y - 1)*(exp(-2*I*pi*y) - 1)*gamma(-y + 1) + expint(y, x)\n    assert expint(2, x*exp_polar(2*I*pi)) == 2*I*pi*x + expint(2, x)\n    assert expint(2, x*exp_polar(-2*I*pi)) == -2*I*pi*x + expint(2, x)\n    assert expint(1, x).rewrite(Ei).rewrite(expint) == expint(1, x)\n    assert expint(x, y).rewrite(Ei) == expint(x, y)\n    assert expint(x, y).rewrite(Ci) == expint(x, y)\n\n    assert mytn(E1(x), E1(x).rewrite(Shi), Shi(x) - Chi(x), x)\n    assert mytn(E1(polar_lift(I)*x), E1(polar_lift(I)*x).rewrite(Si),\n                -Ci(x) + I*Si(x) - I*pi/2, x)\n\n    assert mytn(expint(2, x), expint(2, x).rewrite(Ei).rewrite(expint),\n                -x*E1(x) + exp(-x), x)\n    assert mytn(expint(3, x), expint(3, x).rewrite(Ei).rewrite(expint),\n                x**2*E1(x)/2 + (1 - x)*exp(-x)/2, x)\n\n    assert expint(Rational(3, 2), z).nseries(z) == \\\n        2 + 2*z - z**2/3 + z**3/15 - z**4/84 + z**5/540 - \\\n        2*sqrt(pi)*sqrt(z) + O(z**6)\n\n    assert E1(z).series(z) == -EulerGamma - log(z) + z - \\\n        z**2/4 + z**3/18 - z**4/96 + z**5/600 + O(z**6)\n\n    assert expint(4, z).series(z) == Rational(1, 3) - z/2 + z**2/2 + \\\n        z**3*(log(z)/6 - Rational(11, 36) + EulerGamma/6 - I*pi/6) - z**4/24 + \\\n        z**5/240 + O(z**6)\n\n    assert expint(n, x).series(x, oo, n=3) == \\\n        (n*(n + 1)/x**2 - n/x + 1 + O(x**(-3), (x, oo)))*exp(-x)/x",
+    "truncated": true,
+    "line_count": 860
+  },
+  "related_test:.venv/lib/python3.14/site-packages/sympy/geometry/tests/test_polygon.py": {
+    "path": ".venv/lib/python3.14/site-packages/sympy/geometry/tests/test_polygon.py",
+    "covers": [
+      "ftl_code_expert/prompts/verify.py"
+    ],
+    "symbols_referenced": [
+      "verify"
+    ],
+    "content": "from sympy.core.numbers import (Float, Rational, oo, pi)\nfrom sympy.core.singleton import S\nfrom sympy.core.symbol import (Symbol, symbols)\nfrom sympy.functions.elementary.complexes import Abs\nfrom sympy.functions.elementary.miscellaneous import sqrt\nfrom sympy.functions.elementary.trigonometric import (acos, cos, sin)\nfrom sympy.functions.elementary.trigonometric import tan\nfrom sympy.geometry import (Circle, Ellipse, GeometryError, Point, Point2D,\n                            Polygon, Ray, RegularPolygon, Segment, Triangle,\n                            are_similar, convex_hull, intersection, Line, Ray2D)\nfrom sympy.testing.pytest import raises, slow, warns\nfrom sympy.core.random import verify_numerically\nfrom sympy.geometry.polygon import rad, deg\nfrom sympy.integrals.integrals import integrate\nfrom sympy.utilities.iterables import rotate_left\n\n\ndef feq(a, b):\n    \"\"\"Test if two floating point values are 'equal'.\"\"\"\n    t_float = Float(\"1.0E-10\")\n    return -t_float < a - b < t_float\n\n@slow\ndef test_polygon():\n    x = Symbol('x', real=True)\n    y = Symbol('y', real=True)\n    q = Symbol('q', real=True)\n    u = Symbol('u', real=True)\n    v = Symbol('v', real=True)\n    w = Symbol('w', real=True)\n    x1 = Symbol('x1', real=True)\n    half = S.Half\n    a, b, c = Point(0, 0), Point(2, 0), Point(3, 3)\n    t = Triangle(a, b, c)\n    assert Polygon(Point(0, 0)) == Point(0, 0)\n    assert Polygon(a, Point(1, 0), b, c) == t\n    assert Polygon(Point(1, 0), b, c, a) == t\n    assert Polygon(b, c, a, Point(1, 0)) == t\n    # 2 \"remove folded\" tests\n    assert Polygon(a, Point(3, 0), b, c) == t\n    assert Polygon(a, b, Point(3, -1), b, c) == t\n    # remove multiple collinear points\n    assert Polygon(Point(-4, 15), Point(-11, 15), Point(-15, 15),\n        Point(-15, 33/5), Point(-15, -87/10), Point(-15, -15),\n        Point(-42/5, -15), Point(-2, -15), Point(7, -15), Point(15, -15),\n        Point(15, -3), Point(15, 10), Point(15, 15)) == \\\n        Polygon(Point(-15, -15), Point(15, -15), Point(15, 15), Point(-15, 15))\n\n    p1 = Polygon(\n        Point(0, 0), Point(3, -1),\n        Point(6, 0), Point(4, 5),\n        Point(2, 3), Point(0, 3))\n    p2 = Polygon(\n        Point(6, 0), Point(3, -1),\n        Point(0, 0), Point(0, 3),\n        Point(2, 3), Point(4, 5))\n    p3 = Polygon(\n        Point(0, 0), Point(3, 0),\n        Point(5, 2), Point(4, 4))\n    p4 = Polygon(\n        Point(0, 0), Point(4, 4),\n        Point(5, 2), Point(3, 0))\n    p5 = Polygon(\n        Point(0, 0), Point(4, 4),\n        Point(0, 4))\n    p6 = Polygon(\n        Point(-11, 1), Point(-9, 6.6),\n        Point(-4, -3), Point(-8.4, -8.7))\n    p7 = Polygon(\n        Point(x, y), Point(q, u),\n        Point(v, w))\n    p8 = Polygon(\n        Point(x, y), Point(v, w),\n        Point(q, u))\n    p9 = Polygon(\n        Point(0, 0), Point(4, 4),\n        Point(3, 0), Point(5, 2))\n    p10 = Polygon(\n        Point(0, 2), Point(2, 2),\n        Point(0, 0), Point(2, 0))\n    p11 = Polygon(Point(0, 0), 1, n=3)\n    p12 = Polygon(Point(0, 0), 1, 0, n=3)\n    p13 = Polygon(\n        Point(0, 0),Point(8, 8),\n        Point(23, 20),Point(0, 20))\n    p14 = Polygon(*rotate_left(p13.args, 1))\n\n\n    r = Ray(Point(-9, 6.6), Point(-9, 5.5))\n    #\n    # General polygon\n    #\n    assert p1 == p2\n    assert len(p1.args) == 6\n    assert len(p1.sides) == 6\n    assert p1.perimeter == 5 + 2*sqrt(10) + sqrt(29) + sqrt(8)\n    assert p1.area == 22\n    assert not p1.is_convex()\n    assert Polygon((-1, 1), (2, -1), (2, 1), (-1, -1), (3, 0)\n        ).is_convex() is False\n    # ensure convex for both CW and CCW point specification\n    assert p3.is_convex()\n    assert p4.is_convex()\n    dict5 = p5.angles\n    assert dict5[Point(0, 0)] == pi / 4\n    assert dict5[Point(0, 4)] == pi / 2\n    assert p5.encloses_point(Point(x, y)) is None\n    assert p5.encloses_point(Point(1, 3))\n    assert p5.encloses_point(Point(0, 0)) is False\n    assert p5.encloses_point(Point(4, 0)) is False\n    assert p1.encloses(Circle(Point(2.5, 2.5), 5)) is False\n    assert p1.encloses(Ellipse(Point(2.5, 2), 5, 6)) is False\n    assert p5.plot_interval('x') == [x, 0, 1]\n    assert p5.distance(\n        Polygon(Point(10, 10), Point(14, 14), Point(10, 14))) == 6 * sqrt(2)\n    assert p5.distance(\n        Polygon(Point(1, 8), Point(5, 8), Point(8, 12), Point(1, 12))) == 4\n    with warns(UserWarning, \\\n               match=\"Polygons may intersect producing erroneous output\"):\n        Polygon(Point(0, 0), Point(1, 0), Point(1, 1)).distance(\n                Polygon(Point(0, 0), Point(0, 1), Point(1, 1)))\n    assert hash(p5) == hash(Polygon(Point(0, 0), Point(4, 4), Point(0, 4)))\n    assert hash(p1) == hash(p2)\n    assert hash(p7) == hash(p8)\n    assert hash(p3) != hash(p9)\n    assert p5 == Polygon(Point(4, 4), Point(0, 4), Point(0, 0))\n    assert Polygon(Point(4, 4), Point(0, 4), Point(0, 0)) in p5\n    assert p5 != Point(0, 4)\n    assert Point(0, 1) in p5\n    assert p5.arbitrary_point('t').subs(Symbol('t', real=True), 0) == \\\n        Point(0, 0)\n    raises(ValueError, lambda: Polygon(\n        Point(x, 0), Point(0, y), Point(x, y)).arbitrary_point('x'))\n    assert p6.intersection(r) == [Point(-9, Rational(-84, 13)), Point(-9, Rational(33, 5))]\n    assert p10.area == 0\n    assert p11 == RegularPolygon(Point(0, 0), 1, 3, 0)\n    assert p11 == p12\n    assert p11.vertices[0] == Point(1, 0)\n    assert p11.args[0] == Point(0, 0)\n    p11.spin(pi/2)\n    assert p11.vertices[0] == Point(0, 1)\n    #\n    # Regular polygon\n    #\n    p1 = RegularPolygon(Point(0, 0), 10, 5)\n    p2 = RegularPolygon(Point(0, 0), 5, 5)\n    raises(GeometryError, lambda: RegularPolygon(Point(0, 0), Point(0,\n           1), Point(1, 1)))\n    raises(GeometryError, lambda: RegularPolygon(Point(0, 0), 1, 2))\n    raises(ValueError, lambda: RegularPolygon(Point(0, 0), 1, 2.5))\n\n    assert p1 != p2\n    assert p1.interior_angle == pi*Rational(3, 5)\n    assert p1.exterior_angle == pi*Rational(2, 5)\n    assert p2.apothem == 5*cos(pi/5)\n    assert p2.circumcenter == p1.circumcenter == Point(0, 0)\n    assert p1.circumradius == p1.radius == 10\n    assert p2.circumcircle == Circle(Point(0, 0), 5)\n    assert p2.incircle == Circle(Point(0, 0), p2.apothem)\n    assert p2.inradius == p2.apothem == (5 * (1 + sqrt(5)) / 4)\n    p2.spin(pi / 10)\n    dict1 = p2.angles\n    assert dict1[Point(0, 5)] == 3 * pi / 5\n    assert p1.is_convex()\n    assert p1.rotation == 0\n    assert p1.encloses_point(Point(0, 0))\n    assert p1.encloses_point(Point(11, 0)) is False\n    assert p2.encloses_point(Point(0, 4.9))\n    p1.spin(pi/3)\n    assert p1.rotation == pi/3\n    assert p1.vertices[0] == Point(5, 5*sqrt(3))\n    for var in p1.args:\n        if isinstance(var, Point):\n            assert var == Point(0, 0)\n        else:\n            assert var in (5, 10, pi / 3)\n    assert p1 != Point(0, 0)\n    assert p1 != p5\n\n    # while spin works in place (notice that rotation is 2pi/3 below)\n    # rotate returns a new object\n    p1_old = p1\n    assert p1.rotate(pi/3) == RegularPolygon(Point(0, 0), 10, 5, pi*Rational(2, 3))\n    assert p1 == p1_old\n\n    assert p1.area == (-250*sqrt(5) + 1250)/(4*tan(pi/5))\n    assert p1.length == 20*sqrt(-sqrt(5)/8 + Rational(5, 8))\n    assert p1.scale(2, 2) == \\\n        RegularPolygon(p1.center, p1.radius*2, p1._n, p1.rotation)\n    assert RegularPolygon((0, 0), 1, 4).scale(2, 3) == \\\n        Polygon(Point(2, 0), Point(0, 3), Point(-2, 0), Point(0, -3))\n\n    assert repr(p1) == str(p1)\n\n    #\n    # Angles\n    #\n    angles = p4.angles\n    assert feq(angles[Point(0, 0)].evalf(), Float(\"0.7853981633974483\"))\n    assert feq(angles[Point(4, 4)].evalf(), Float(\"1.2490457723982544\"))\n    assert feq(angles[Point(5, 2)].evalf(), Float(\"1.8925468811915388\"))\n    assert feq(angles[Point(3, 0)].evalf(), Float(\"2.3561944901923449\"))\n\n    angles = p3.angles\n    assert feq(angles[Point(0, 0)].evalf(), Float(\"0.7853981633974483\"))\n    assert feq(angles[Point(4, 4)].evalf(), Float(\"1.2490457723982544\"))\n    assert feq(angles[Point(5, 2)].evalf(), Float(\"1.8925468811915388\"))\n    assert feq(angles[Point(3, 0)].evalf(), Float(\"2.3561944901923449\"))\n\n    # https://github.com/sympy/sympy/issues/24885\n    interior_angles_sum = sum(p13.angles.values())\n    assert feq(interior_angles_sum, (len(p13.angles) - 2)*pi )\n    interior_angles_sum = sum(p14.angles.values())\n    assert feq(interior_angles_sum, (len(p14.angles) - 2)*pi )\n\n    #\n    # Triangle\n    #\n    p1 = Point(0, 0)\n    p2 = Point(5, 0)\n    p3 = Point(0, 5)\n    t1 = Triangle(p1, p2, p3)\n    t2 = Triangle(p1, p2, Point(Rational(5, 2), sqrt(Rational(75, 4))))\n    t3 = Triangle(p1, Point(x1, 0), Point(0, x1))\n    s1 = t1.sides\n    assert Triangle(p1, p2, p1) == Polygon(p1, p2, p1) == Segment(p1, p2)\n    raises(GeometryError, lambda: Triangle(Point(0, 0)))\n\n    # Basic stuff\n    assert Triangle(p1, p1, p1) == p1\n    assert Triangle(p2, p2*2, p2*3) == Segment(p2, p2*3)\n    assert t1.area == Rational(25, 2)\n    assert t1.is_right()\n    assert t2.is_right() is False\n    assert t3.is_right()\n    assert p1 in t1\n    assert t1.sides[0] in t1\n    assert Segment((0, 0), (1, 0)) in t1\n    assert Point(5, 5) not in t2\n    assert t1.is_convex()\n    assert feq(t1.angles[p1].evalf(), pi.evalf()/2)\n\n    assert t1.is_equilateral() is False\n    assert t2.is_equilateral()\n    assert t3.is_equilateral() is False\n    assert are_similar(t1, t2) is False\n    assert are_similar(t1, t3)\n    assert are_similar(t2, t3) is False\n    assert t1.is_similar(Point(0, 0)) is False\n    assert t1.is_similar(t2) is False\n\n    # Bisectors\n    bisectors = t1.bisectors()\n    assert bisectors[p1] == Segment(\n        p1, Point(Rational(5, 2), Rational(5, 2)))\n    assert t2.bisectors()[p2] == Segment(\n        Point(5, 0), Point(Rational(5, 4), 5*sqrt(3)/4))\n    p4 = Point(0, x1)\n    assert t3.bisectors()[p4] == Segment(p4, Point(x1*(sqrt(2) - 1), 0))\n    ic = (250 - 125*sqrt(2))/50\n    assert t1.incenter == Point(ic, ic)\n\n    # Inradius\n    assert t1.inradius == t1.incircle.radius == 5 - 5*sqrt(2)/2\n    assert t2.inradius == t2.incircle.radius == 5*sqrt(3)/6\n    assert t3.inradius == t3.incircle.radius == x1**2/((2 + sqrt(2))*Abs(x1))\n\n    # Exradius\n    assert t1.exradii[t1.sides[2]] == 5*sqrt(2)/2\n\n    # Excenters\n    assert t1.excenters[t1.sides[2]] == Point2D(25*sqrt(2), -5*sqrt(2)/2)\n\n    # Circumcircle\n    assert t1.circumcircle.center == Point(2.5, 2.5)\n\n    # Medians + Centroid\n    m = t1.medians\n    assert t1.centroid == Point(Rational(5, 3), Rational(5, 3))\n    assert m[p1] == Segment(p1, Point(Rational(5, 2), Rational(5, 2)))\n    assert t3.medians[p1] == Segment(p1, Point(x1/2, x1/2))\n    assert intersection(m[p1], m[p2], m[p3]) == [t1.centroid]\n    assert t1.medial == Triangle(Point(2.5, 0), Point(0, 2.5), Point(2.5, 2.5))\n\n    # Nine-point circle\n    assert t1.nine_point_circle == Circle(Point(2.5, 0),\n                                          Point(0, 2.5), Point(2.5, 2.5))\n    assert t1.nine_point_circle == Circle(Point(0, 0),\n                                          Point(0, 2.5), Point(2.5, 2.5))\n\n    # Perpendicular\n    altitudes = t1.altitudes\n    assert altitudes[p1] == Segment(p1, Point(Rational(5, 2), Rational(5, 2)))\n    assert altitudes[p2].equals(s1[0])\n    assert altitudes[p3] == s1[2]\n    assert t1.orthocenter == p1\n    t = S('''Triangle(\n    Point(100080156402737/5000000000000, 79782624633431/500000000000),\n    Point(39223884078253/2000000000000, 156345163124289/1000000000000),\n    Point(31241359188437/1250000000000, 338338270939941/1000000000000000))''')\n    assert t.orthocenter == S('''Point(-780660869050599840216997'''\n    '''79471538701955848721853/80368430960602242240789074233100000000000000,'''\n    '''20151573611150265741278060334545897615974257/16073686192120448448157'''\n    '''8148466200000000000)''')\n\n    # Ensure\n    assert len(intersection(*bisectors.values())) == 1\n    assert len(intersection(*altitudes.values())) == 1\n    assert len(intersection(*m.values())) == 1\n\n    # Distance\n    p1 = Polygon(\n        Point(0, 0), Point(1, 0),\n        Point(1, 1), Point(0, 1))\n    p2 = Polygon(\n        Point(0, Rational(5)/4), Point(1, Rational(5)/4),\n        Point(1, Rational(9)/4), Point(0, Rational(9)/4))\n    p3 = Polygon(\n        Point(1, 2), Point(2, 2),\n        Point(2, 1))\n    p4 = Polygon(\n        Point(1, 1), Point(Rational(6)/5, 1),\n        Point(1, Rational(6)/5))\n    pt1 = Point(half, half)\n    pt2 = Point(1, 1)\n\n    '''Polygon to Point'''\n    assert p1.distance(pt1) == half\n    assert p1.distance(pt2) == 0\n    assert p2.distance(pt1) == Rational(3)/4\n    assert p3.distance(pt2) == sqrt(2)/2\n\n    '''Polygon to Polygon'''\n    # p1.distance(p2) emits a warning\n    with warns(UserWarning, \\\n               match=\"Polygons may intersect producing erroneous output\"):\n        assert p1.distance(p2) == half/2\n\n    assert p1.distance(p3) == sqrt(2)/2\n\n    # p3.distance(p4) emits a warning\n    with warns(UserWarning, \\\n               match=\"Polygons may intersect producing erroneous output\"):\n        assert p3.distance(p4) == (sqrt(2)/2 - sqrt(Rational(2)/25)/2)\n\n\ndef test_convex_hull():\n    p = [Point(-5, -1), Point(-2, 1), Point(-2, -1), Point(-1, -3), \\\n         Point(0, 0), Point(1, 1), Point(2, 2), Point(2, -1), Point(3, 1), \\\n         Point(4, -1), Point(6, 2)]\n    ch = Polygon(p[0], p[3], p[9], p[10], p[6], p[1])\n    #test handling of duplicate points\n    p.append(p[3])\n\n    #more than 3 collinear points\n    another_p = [Point(-45, -85), Point(-45, 85), Point(-45, 26), \\\n                 Point(-45, -24)]\n    ch2 = Segment(another_p[0], another_p[1])\n\n    assert convex_hull(*another_p) == ch2\n    assert convex_hull(*p) == ch\n    assert convex_hull(p[0]) == p[0]\n    assert convex_hull(p[0], p[1]) == Segment(p[0], p[1])\n\n    # no unique points\n    assert convex_hull(*[p[-1]]*3) == p[-1]\n\n    # collection of items\n    assert convex_hull(*[Point(0, 0), \\\n                        Segment(Point(1, 0), Point(1, 1)), \\\n                        RegularPolygon(Point(2, 0), 2, 4)]) == \\\n        Polygon(Point(0, 0), Point(2, -2), Point(4, 0), Point(2, 2))\n\n\ndef test_encloses():\n    # square with a dimpled left side\n    s = Polygon(Point(0, 0), Point(1, 0), Point(1, 1), Point(0, 1), \\\n        Point(S.Half, S.Half))\n    # the following is True if the polygon isn't treated as closing on itself\n    assert s.encloses(Point(0, S.Half)) is False\n    assert s.encloses(Point(S.Half, S.Half)) is False  # it's a vertex\n    assert s.encloses(Point(Rational(3, 4), S.Half)) is True\n\n\ndef test_triangle_kwargs():\n    assert Triangle(sss=(3, 4, 5)) == \\\n        Triangle(Point(0, 0), Point(3, 0), Point(3, 4))\n    assert Triangle(asa=(30, 2, 30)) == \\\n        Triangle(Point(0, 0), Point(2, 0), Point(1, sqrt(3)/3))\n    assert Triangle(sas=(1, 45, 2)) == \\\n        Triangle(Point(0, 0), Point(2, 0), Point(sqrt(2)/2, sqrt(2)/2))\n    assert Triangle(sss=(1, 2, 5)) is None\n    assert deg(rad(180)) == 180\n\n\ndef test_transform():\n    pts = [Point(0, 0), Point(S.Half, Rational(1, 4)), Point(1, 1)]\n    pts_out = [Point(-4, -10), Point(-3, Rational(-37, 4)), Point(-2, -7)]\n    assert Triangle(*pts).scale(2, 3, (4, 5)) == Triangle(*pts_out)\n    assert RegularPolygon((0, 0), 1, 4).scale(2, 3, (4, 5)) == \\\n        Polygon(Point(-2, -10), Point(-4, -7), Point(-6, -10), Point(-4, -13))\n    # Checks for symmetric scaling\n    assert RegularPolygon((0, 0), 1, 4).scale(2, 2) == \\\n        RegularPolygon(Point2D(0, 0), 2, 4, 0)\n\ndef test_reflect():\n    x = Symbol('x', real=True)\n    y = Symbol('y', real=True)\n    b = Symbol('b')\n    m = Symbol('m')\n    l = Line((0, b), slope=m)\n    p = Point(x, y)\n    r = p.reflect(l)\n    dp = l.perpendicular_segment(p).length\n    dr = l.perpendicular_segment(r).length\n\n    assert verify_numerically(dp, dr)\n\n    assert Polygon((1, 0), (2, 0), (2, 2)).reflect(Line((3, 0), slope=oo)) \\\n        == Triangle(Point(5, 0), Point(4, 0), Point(4, 2))\n    assert Polygon((1, 0), (2, 0), (2, 2)).reflect(Line((0, 3), slope=oo)) \\\n        == Triangle(Point(-1, 0), Point(-2, 0), Point(-2, 2))\n    assert Polygon((1, 0), (2, 0), (2, 2)).reflect(Line((0, 3), slope=0)) \\\n        == Triangle(Point(1, 6), Point(2, 6), Point(2, 4))\n    assert Polygon((1, 0), (2, 0), (2, 2)).reflect(Line((3, 0), slope=0)) \\\n        == Triangle(Point(1, 0), Point(2, 0), Point(2, -2))\n\ndef test_bisectors():\n    p1, p2, p3 = Point(0, 0), Point(1, 0), Point(0, 1)\n    p = Polygon(Point(0, 0), Point(2, 0), Point(1, 1), Point(0, 3))\n    q = Polygon(Point(1, 0), Point(2, 0), Point(3, 3), Point(-1, 5))\n    poly = Polygon(Point(3, 4), Point(0, 0), Point(8, 7), Point(-1, 1), Point(19, -19))\n    t = Triangle(p1, p2, p3)\n    assert t.bisectors()[p2] == Segment(Point(1, 0), Point(0, sqrt(2) - 1))\n    assert p.bisectors()[Point2D(0, 3)] == Ray2D(Point2D(0, 3), \\\n        Point2D(sin(acos(2*sqrt(5)/5)/2), 3 - cos(acos(2*sqrt(5)/5)/2)))\n    assert q.bisectors()[Point2D(-1, 5)] == \\\n        Ray2D(Point2D(-1, 5), Point2D(-1 + sqrt(29)*(5*sin(acos(9*sqrt(145)/145)/2) + \\\n        2*cos(acos(9*sqrt(145)/145)/2))/29, sqrt(29)*(-5*cos(acos(9*sqrt(145)/145)/2) + \\\n        2*sin(acos(9*sqrt(145)/145)/2))/29 + 5))\n    assert poly.bisectors()[Point2D(-1, 1)] == Ray2D(Point2D(-1, 1), \\\n        Point2D(-1 + sin(acos(sqrt(26)/26)/2 + pi/4), 1 - sin(-acos(sqrt(26)/26)/2 + pi/4)))\n\ndef test_incenter():\n    assert Triangle(Point(0, 0), Point(1, 0), Point(0, 1)).incenter \\\n        == Point(1 - sqrt(2)/2, 1 - sqrt(2)/2)\n\ndef test_inradius():\n    assert Triangle(Point(0, 0), Point(4, 0), Point(0, 3)).inradius == 1\n\ndef test_incircle():\n    assert Triangle(Point(0, 0), Point(2, 0), Point(0, 2)).incircle \\\n        == Circle(Point(2 - sqrt(2), 2 - sqrt(2)), 2 - sqrt(2))\n\ndef test_exradii():\n    t = Triangle(Point(0, 0), Point(6, 0), Point(0, 2))\n    assert t.exradii[t.sides[2]] == (-2 + sqrt(10))\n\ndef test_medians():\n    t = Triangle(Point(0, 0), Point(1, 0), Point(0, 1))\n    assert t.medians[Point(0, 0)] == Segment(Point(0, 0), Point(S.Half, S.Half))\n\ndef test_medial():\n    assert Triangle(Point(0, 0), Point(1, 0), Point(0, 1)).medial \\\n        == Triangle(Point(S.Half, 0), Point(S.Half, S.Half), Point(0, S.Half))\n\ndef test_nine_point_circle():\n    assert Triangle(Point(0, 0), Point(1, 0), Point(0, 1)).nine_point_circle \\\n        == Circle(Point2D(Rational(1, 4), Rational(1, 4)), sqrt(2)/4)\n\ndef test_eulerline():\n    assert Triangle(Point(0, 0), Point(1, 0), Point(0, 1)).eulerline \\\n        == Line(Point2D(0, 0), Point2D(S.Half, S.Half))\n    assert Triangle(Point(0, 0), Point(10, 0), Point(5, 5*sqrt(3))).eulerline \\\n        == Point2D(5, 5*sqrt(3)/3)\n    assert Triangle(Point(4, -6), Point(4, -1), Point(-3, 3)).eulerline \\\n        == Line(Point2D(Rational(64, 7), 3), Point2D(Rational(-29, 14), Rational(-7, 2)))\n\ndef test_intersection():\n    poly1 = Triangle(Point(0, 0), Point(1, 0), Point(0, 1))\n    poly2 = Polygon(Point(0, 1), Point(-5, 0),\n                    Point(0, -4), Point(0, Rational(1, 5)),\n                    Point(S.Half, -0.1), Point(1, 0), Point(0, 1))\n\n    assert poly1.intersection(poly2) == [Point2D(Rational(1, 3), 0),\n        Segment(Point(0, Rational(1, 5)), Point(0, 0)),\n        Segment(Point(1, 0), Point(0, 1))]\n    assert poly2.intersection(poly1) == [Point(Rational(1, 3), 0),\n        Segment(Point(0, 0), Point(0, Rational(1, 5))),\n        Segment(Point(1, 0), Point(0, 1))]\n    assert poly1.intersection(Point(0, 0)) == [Point(0, 0)]\n    assert poly1.intersection(Point(-12,  -43)) == []\n    assert poly2.intersection(Line((-12, 0), (12, 0))) == [Point(-5, 0),\n        Point(0, 0), Point(Rational(1, 3), 0), Point(1, 0)]\n    assert poly2.intersection(Line((-12, 12), (12, 12))) == []\n    assert poly2.intersection(Ray((-3, 4), (1, 0))) == [Segment(Point(1, 0),\n        Point(0, 1))]\n    assert poly2.intersection(Circle((0, -1), 1)) == [Point(0, -2),\n        Point(0, 0)]\n    assert poly1.intersection(poly1) == [Segment(Point(0, 0), Point(1, 0)),",
+    "truncated": true,
+    "line_count": 676
+  },
+  "related_test:.venv/lib/python3.14/site-packages/sympy/integrals/tests/test_integrals.py": {
+    "path": ".venv/lib/python3.14/site-packages/sympy/integrals/tests/test_integrals.py",
+    "covers": [
+      "ftl_code_expert/prompts/verify.py"
+    ],
+    "symbols_referenced": [
+      "verify"
+    ],
+    "content": "import math\nfrom sympy.concrete.summations import (Sum, summation)\nfrom sympy.core.add import Add\nfrom sympy.core.containers import Tuple\nfrom sympy.core.expr import Expr\nfrom sympy.core.function import (Derivative, Function, Lambda, diff)\nfrom sympy.core import EulerGamma\nfrom sympy.core.numbers import (E, I, Rational, nan, oo, pi, zoo, all_close)\nfrom sympy.core.relational import (Eq, Ne)\nfrom sympy.core.singleton import S\nfrom sympy.core.symbol import (Symbol, symbols)\nfrom sympy.core.sympify import sympify\nfrom sympy.functions.elementary.complexes import (Abs, im, polar_lift, re, sign)\nfrom sympy.functions.elementary.exponential import (LambertW, exp, exp_polar, log)\nfrom sympy.functions.elementary.hyperbolic import (acosh, asinh, cosh, coth, csch, sinh, tanh, sech)\nfrom sympy.functions.elementary.miscellaneous import (Max, Min, sqrt)\nfrom sympy.functions.elementary.piecewise import Piecewise\nfrom sympy.functions.elementary.trigonometric import (acos, asin, atan, cos, sin, sinc, tan, sec)\nfrom sympy.functions.special.delta_functions import DiracDelta, Heaviside\nfrom sympy.functions.special.error_functions import (Ci, Ei, Si, erf, erfc, erfi, fresnelc, li)\nfrom sympy.functions.special.gamma_functions import (gamma, polygamma)\nfrom sympy.functions.special.hyper import (hyper, meijerg)\nfrom sympy.functions.special.singularity_functions import SingularityFunction\nfrom sympy.functions.special.zeta_functions import lerchphi\nfrom sympy.integrals.integrals import integrate\nfrom sympy.logic.boolalg import And\nfrom sympy.matrices.dense import Matrix\nfrom sympy.polys.polytools import (Poly, factor)\nfrom sympy.printing.str import sstr\nfrom sympy.series.order import O\nfrom sympy.sets.sets import Interval\nfrom sympy.simplify.gammasimp import gammasimp\nfrom sympy.simplify.simplify import simplify\nfrom sympy.simplify.trigsimp import trigsimp\nfrom sympy.tensor.indexed import (Idx, IndexedBase)\nfrom sympy.core.expr import unchanged\nfrom sympy.functions.elementary.integers import floor\nfrom sympy.integrals.integrals import Integral\nfrom sympy.integrals.risch import NonElementaryIntegral\nfrom sympy.physics import units\nfrom sympy.testing.pytest import raises, slow, warns_deprecated_sympy, warns\nfrom sympy.utilities.exceptions import SymPyDeprecationWarning\nfrom sympy.core.random import verify_numerically\n\n\nx, y, z, a, b, c, d, e, s, t, x_1, x_2 = symbols('x y z a b c d e s t x_1 x_2')\nn = Symbol('n', integer=True)\nf = Function('f')\n\n\ndef NS(e, n=15, **options):\n    return sstr(sympify(e).evalf(n, **options), full_prec=True)\n\n\ndef test_poly_deprecated():\n    p = Poly(2*x, x)\n    assert p.integrate(x) == Poly(x**2, x, domain='QQ')\n    # The stacklevel is based on Integral(Poly)\n    with warns(SymPyDeprecationWarning, test_stacklevel=False):\n        integrate(p, x)\n    with warns(SymPyDeprecationWarning, test_stacklevel=False):\n        Integral(p, (x,))\n\n\n@slow\ndef test_principal_value():\n    g = 1 / x\n    assert Integral(g, (x, -oo, oo)).principal_value() == 0\n    assert Integral(g, (y, -oo, oo)).principal_value() == oo * sign(1 / x)\n    raises(ValueError, lambda: Integral(g, (x)).principal_value())\n    raises(ValueError, lambda: Integral(g).principal_value())\n\n    l = 1 / ((x ** 3) - 1)\n    assert Integral(l, (x, -oo, oo)).principal_value().together() == -sqrt(3)*pi/3\n    raises(ValueError, lambda: Integral(l, (x, -oo, 1)).principal_value())\n\n    d = 1 / (x ** 2 - 1)\n    assert Integral(d, (x, -oo, oo)).principal_value() == 0\n    assert Integral(d, (x, -2, 2)).principal_value() == -log(3)\n\n    v = x / (x ** 2 - 1)\n    assert Integral(v, (x, -oo, oo)).principal_value() == 0\n    assert Integral(v, (x, -2, 2)).principal_value() == 0\n\n    s = x ** 2 / (x ** 2 - 1)\n    assert Integral(s, (x, -oo, oo)).principal_value() is oo\n    assert Integral(s, (x, -2, 2)).principal_value() == -log(3) + 4\n\n    f = 1 / ((x ** 2 - 1) * (1 + x ** 2))\n    assert Integral(f, (x, -oo, oo)).principal_value() == -pi / 2\n    assert Integral(f, (x, -2, 2)).principal_value() == -atan(2) - log(3) / 2\n\n\ndef diff_test(i):\n    \"\"\"Return the set of symbols, s, which were used in testing that\n    i.diff(s) agrees with i.doit().diff(s). If there is an error then\n    the assertion will fail, causing the test to fail.\"\"\"\n    syms = i.free_symbols\n    for s in syms:\n        assert (i.diff(s).doit() - i.doit().diff(s)).expand() == 0\n    return syms\n\n\ndef test_improper_integral():\n    assert integrate(log(x), (x, 0, 1)) == -1\n    assert integrate(x**(-2), (x, 1, oo)) == 1\n    assert integrate(1/(1 + exp(x)), (x, 0, oo)) == log(2)\n\n\ndef test_constructor():\n    # this is shared by Sum, so testing Integral's constructor\n    # is equivalent to testing Sum's\n    s1 = Integral(n, n)\n    assert s1.limits == (Tuple(n),)\n    s2 = Integral(n, (n,))\n    assert s2.limits == (Tuple(n),)\n    s3 = Integral(Sum(x, (x, 1, y)))\n    assert s3.limits == (Tuple(y),)\n    s4 = Integral(n, Tuple(n,))\n    assert s4.limits == (Tuple(n),)\n\n    s5 = Integral(n, (n, Interval(1, 2)))\n    assert s5.limits == (Tuple(n, 1, 2),)\n\n    # Testing constructor with inequalities:\n    s6 = Integral(n, n > 10)\n    assert s6.limits == (Tuple(n, 10, oo),)\n    s7 = Integral(n, (n > 2) & (n < 5))\n    assert s7.limits == (Tuple(n, 2, 5),)\n\n\ndef test_basics():\n\n    assert Integral(0, x) != 0\n    assert Integral(x, (x, 1, 1)) != 0\n    assert Integral(oo, x) != oo",
+    "truncated": true,
+    "line_count": 2187
+  },
+  "observations_module": {
+    "file": "ftl_code_expert/observations.py",
+    "imports": [
+      "asyncio",
+      "inspect",
+      "json",
+      "re"
+    ],
+    "from_imports": [
+      {
+        "module": "__future__",
+        "names": [
+          "annotations"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "typing",
+        "names": [
+          "Any"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"\nObservation tools for code explanation.\n\nInstead of dumping entire repo contents into the prompt, the model\nrequests specific observations (grep, file reads, etc.) and gets\ntargeted results back. This keeps prompts focused and fast.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport inspect\nimport json\nimport re\nfrom pathlib import Path\nfrom typing import Any\n\n"
+  },
+  "read_file_sig": {
+    "function": "read_file",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 64,
+    "end_line": 96,
+    "source": "async def read_file(file_path: str, repo_path: str, start_line: int = 0, max_lines: int = 200) -> dict[str, Any]:\n    \"\"\"\n    Read a file's contents.\n\n    Args:\n        file_path: Path to the file (relative to repo)\n        repo_path: Repository root\n        start_line: Starting line (0-indexed)\n        max_lines: Maximum lines to return\n\n    Returns:\n        Dict with file content and metadata\n    \"\"\"\n    try:\n        full_path = Path(repo_path) / file_path\n        if not full_path.is_file():\n            return {\"error\": f\"File not found: {file_path}\", \"file\": file_path}\n\n        content = full_path.read_text(encoding=\"utf-8\")\n        lines = content.split(\"\\n\")\n        total_lines = len(lines)\n\n        selected = lines[start_line:start_line + max_lines]\n\n        return {\n            \"file\": file_path,\n            \"total_lines\": total_lines,\n            \"start_line\": start_line,\n            \"lines_returned\": len(selected),\n            \"content\": \"\\n\".join(selected),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"file\": file_path}"
+  },
+  "find_usages_sig": {
+    "function": "find_usages",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 201,
+    "end_line": 241,
+    "source": "async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:\n    \"\"\"\n    Find where a symbol is used (imported, called, referenced).\n\n    Args:\n        symbol: Symbol to search for\n        repo_path: Repository path\n\n    Returns:\n        Dict with usage locations\n    \"\"\"\n    try:\n        proc = await asyncio.create_subprocess_exec(\n            \"grep\", \"-Frn\", \"--include=*.py\", symbol, repo_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE,\n        )\n        try:\n            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)\n        except asyncio.TimeoutError:\n            proc.kill()\n            return {\"error\": \"grep timed out\", \"symbol\": symbol}\n\n        usages = []\n        for line in stdout.decode().strip().split(\"\\n\"):\n            if line and \":\" in line:\n                parts = line.split(\":\", 2)\n                if len(parts) >= 3:\n                    usages.append({\n                        \"file\": parts[0].replace(repo_path + \"/\", \"\"),\n                        \"line\": int(parts[1]),\n                        \"text\": parts[2].strip()[:120],\n                    })\n\n        return {\n            \"symbol\": symbol,\n            \"usages\": usages[:30],\n            \"total_count\": len(usages),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"symbol\": symbol}"
+  },
+  "grep_sig": {
+    "function": "grep",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 19,
+    "end_line": 61,
+    "source": "async def grep(pattern: str, repo_path: str, glob: str = \"*.py\", max_results: int = 30) -> dict[str, Any]:\n    \"\"\"\n    Search for a pattern in the codebase.\n\n    Args:\n        pattern: Regex pattern to search for\n        repo_path: Repository path\n        glob: File glob pattern (default: *.py)\n        max_results: Maximum number of results\n\n    Returns:\n        Dict with matching files and lines\n    \"\"\"\n    try:\n        proc = await asyncio.create_subprocess_exec(\n            \"grep\", \"-Ern\", f\"--include={glob}\", pattern, repo_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE,\n        )\n        try:\n            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)\n        except asyncio.TimeoutError:\n            proc.kill()\n            return {\"error\": \"grep timed out\", \"pattern\": pattern}\n\n        matches = []\n        for line in stdout.decode().strip().split(\"\\n\"):\n            if line and \":\" in line:\n                parts = line.split(\":\", 2)\n                if len(parts) >= 3:\n                    matches.append({\n                        \"file\": parts[0].replace(repo_path + \"/\", \"\"),\n                        \"line\": int(parts[1]),\n                        \"text\": parts[2].strip()[:120],\n                    })\n\n        return {\n            \"pattern\": pattern,\n            \"matches\": matches[:max_results],\n            \"total_count\": len(matches),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"pattern\": pattern}"
+  },
+  "find_symbol_usage_in_auto_gather": {
+    "symbol": "find_symbol",
+    "usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 137,
+        "text": "req_keys = find_symbols(proposition)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 151,
+        "text": "syms = find_symbols(l)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 156,
+        "text": "keys |= {l for l in lkeys if find_symbols(l) & req_keys != set()}"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 166,
+        "text": "def find_symbols(pred):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 179,
+        "text": "symbols |= find_symbols(a)"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 151,
+        "text": "async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 288,
+        "text": "\"find_symbol\": find_symbol,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3075,
+        "text": "from .observations import find_symbol, find_usages, grep, read_file"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 27,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 45,
+        "text": "- Start with `find_symbol` or `grep` to locate relevant code, then `read_file` to read it."
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 34,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |"
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 56,
+        "text": "- Use `find_symbol` to locate definitions referenced in the belief."
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 57,
+        "text": "- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code."
+      }
+    ],
+    "production_usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 137,
+        "text": "req_keys = find_symbols(proposition)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 151,
+        "text": "syms = find_symbols(l)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 156,
+        "text": "keys |= {l for l in lkeys if find_symbols(l) & req_keys != set()}"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 166,
+        "text": "def find_symbols(pred):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 179,
+        "text": "symbols |= find_symbols(a)"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 151,
+        "text": "async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 288,
+        "text": "\"find_symbol\": find_symbol,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3075,
+        "text": "from .observations import find_symbol, find_usages, grep, read_file"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 27,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 45,
+        "text": "- Start with `find_symbol` or `grep` to locate relevant code, then `read_file` to read it."
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 34,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |"
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 56,
+        "text": "- Use `find_symbol` to locate definitions referenced in the belief."
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 57,
+        "text": "- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code."
+      }
+    ],
+    "test_usages": [],
+    "production_count": 13,
+    "test_count": 0,
+    "total_count": 13
+  },
+  "get_repo_structure_import": {
+    "symbol": "get_repo_structure",
+    "usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 25,
+        "text": "get_repo_structure,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 344,
+        "text": "tree = get_repo_structure(repo_path, max_depth=3)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 416,
+        "text": "repo_tree = get_repo_structure(os.path.abspath(repo_path), max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 521,
+        "text": "tree = get_repo_structure(abs_repo)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 899,
+        "text": "repo_tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 953,
+        "text": "tree = get_repo_structure(target_path)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1079,
+        "text": "tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3146,
+        "text": "tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3736,
+        "text": "repo_tree = get_repo_structure(abs_repo, max_depth=3)"
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 188,
+        "text": "def get_repo_structure(repo_path: str, max_depth: int = 4) -> str:"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 25,
+        "text": "get_repo_structure,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 344,
+        "text": "tree = get_repo_structure(repo_path, max_depth=3)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 416,
+        "text": "repo_tree = get_repo_structure(os.path.abspath(repo_path), max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 521,
+        "text": "tree = get_repo_structure(abs_repo)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 899,
+        "text": "repo_tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 953,
+        "text": "tree = get_repo_structure(target_path)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1079,
+        "text": "tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3146,
+        "text": "tree = get_repo_structure(repo_path, max_depth=2)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3736,
+        "text": "repo_tree = get_repo_structure(abs_repo, max_depth=3)"
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 188,
+        "text": "def get_repo_structure(repo_path: str, max_depth: int = 4) -> str:"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 10,
+    "test_count": 0,
+    "total_count": 10
+  },
+  "extract_source_file_body": {
+    "function": "_extract_source_file",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2986,
+    "end_line": 2998,
+    "source": "def _extract_source_file(entry_path: str, project_dir: str | None = None) -> str | None:\n    \"\"\"Extract source file path from an entry's header line (# File: ...).\"\"\"\n    base = project_dir or \".\"\n    full_path = Path(base) / entry_path\n    if not full_path.is_file():\n        return None\n    try:\n        for line in full_path.read_text().splitlines()[:5]:\n            if line.startswith(\"# File: \"):\n                return line[8:].strip()\n    except OSError:\n        pass\n    return None"
+  },
+  "has_reasons_body": {
+    "function": "_has_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 156,
+    "end_line": 158,
+    "source": "def _has_reasons() -> bool:\n    \"\"\"Check if ftl-reasons CLI is available.\"\"\"\n    return shutil.which(\"reasons\") is not None"
+  },
+  "invoke_sig": {
+    "function": "invoke",
+    "file": "ftl_code_expert/llm.py",
+    "start_line": 25,
+    "end_line": 70,
+    "source": "async def invoke(prompt: str, model: str = \"claude\", timeout: int = DEFAULT_TIMEOUT) -> str:\n    \"\"\"\n    Invoke model via CLI, piping prompt through stdin.\n\n    Args:\n        prompt: Full prompt text to send\n        model: Model name (must be in MODEL_COMMANDS)\n        timeout: Timeout in seconds\n\n    Returns:\n        Model's response text\n\n    Raises:\n        ValueError: If model not supported\n        TimeoutError: If model doesn't respond in time\n        RuntimeError: If model invocation fails\n    \"\"\"\n    if model not in MODEL_COMMANDS:\n        raise ValueError(f\"Unknown model: {model}. Available: {list(MODEL_COMMANDS.keys())}\")\n\n    cmd = MODEL_COMMANDS[model]\n\n    # Remove CLAUDECODE env var to allow nested claude invocation\n    env = {k: v for k, v in os.environ.items() if k != \"CLAUDECODE\"}\n\n    proc = await asyncio.create_subprocess_exec(\n        *cmd,\n        stdin=asyncio.subprocess.PIPE,\n        stdout=asyncio.subprocess.PIPE,\n        stderr=asyncio.subprocess.PIPE,\n        env=env,\n    )\n\n    try:\n        stdout, stderr = await asyncio.wait_for(\n            proc.communicate(prompt.encode()),\n            timeout=timeout,\n        )\n    except TimeoutError:\n        proc.kill()\n        raise TimeoutError(f\"Model {model} timed out after {timeout}s\") from None\n\n    if proc.returncode != 0:\n        raise RuntimeError(f\"Model {model} failed: {stderr.decode()}\")\n\n    return stdout.decode()"
+  },
+  "run_observations_sig": {
+    "function": "run_observations",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 317,
+    "end_line": 343,
+    "source": "async def run_observations(observations: list[dict[str, Any]], repo_path: str) -> dict[str, Any]:\n    \"\"\"Run multiple observations in parallel.\"\"\"\n    results = {}\n    tasks = []\n    task_names = []\n\n    for obs in observations:\n        name = obs.get(\"name\", \"unnamed\")\n        tool = obs.get(\"tool\")\n        params = obs.get(\"params\", {})\n\n        if not tool:\n            results[name] = {\"error\": \"No tool specified\"}\n            continue\n\n        tasks.append(run_observation(name, tool, params, repo_path))\n        task_names.append(name)\n\n    if tasks:\n        task_results = await asyncio.gather(*tasks, return_exceptions=True)\n        for name, result in zip(task_names, task_results):\n            if isinstance(result, Exception):\n                results[name] = {\"error\": str(result)}\n            else:\n                results[name] = result[\"result\"]\n\n    return results"
+  },
+  "reasons_export_behavior": {
+    "symbol": "reasons export",
+    "usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2221,
+        "text": "# reasons export writes network.json directly (stdout is just a status message)"
+      },
+      {
+        "file": "backfill_source_file.py",
+        "line": 39,
+        "text": "print(\"No network.json found. Run: reasons export\")"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2221,
+        "text": "# reasons export writes network.json directly (stdout is just a status message)"
+      },
+      {
+        "file": "backfill_source_file.py",
+        "line": 39,
+        "text": "print(\"No network.json found. Run: reasons export\")"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  }
+}
+```
+
+Use these results to inform your review. Do not request the same observations again.
+
+
+## Instructions
+
+For each significant change (new file, modified function, etc.), provide a structured verdict.
+
+Use this exact format for each change:
+
+### <file_path or file_path:function_name>
+VERDICT: PASS | CONCERN | BLOCK
+CORRECTNESS: VALID | QUESTIONABLE | BROKEN
+SPEC_COMPLIANCE: MEETS | PARTIAL | VIOLATES | N/A
+ISSUE_COMPLIANCE: ADDRESSES | PARTIAL | UNRELATED | N/A
+BELIEF_COMPLIANCE: CONSISTENT | VIOLATES | N/A
+TEST_COVERAGE: COVERED | PARTIAL | UNTESTED
+INTEGRATION: WIRED | PARTIAL | MISSING
+REASONING: <brief explanation of your assessment>
+---
+
+## Review Criteria
+
+1. **CORRECTNESS**: Does the code do what it claims? Is the logic sound?
+   - VALID: Logic is correct, no bugs apparent
+   - QUESTIONABLE: Logic may have edge cases or unclear behavior
+   - BROKEN: Clear bugs or incorrect behavior
+
+2. **SPEC_COMPLIANCE**: Does it meet MUST requirements from the spec?
+   - MEETS: All relevant spec requirements satisfied
+   - PARTIAL: Some requirements met, others missing or incomplete
+   - VIOLATES: Contradicts spec requirements
+   - N/A: No spec provided or not applicable
+
+3. **ISSUE_COMPLIANCE** (only when an issue is provided): Do the changes address the problem or feature described in the issue?
+   - ADDRESSES: Changes directly solve the issue's stated problem or implement the requested feature
+   - PARTIAL: Changes partially address the issue but leave some aspects unresolved
+   - UNRELATED: Changes do not appear related to the issue
+   - N/A: No issue provided
+
+4. **TEST_COVERAGE**: Are there tests for the new/changed code?
+   - COVERED: Tests exist and cover the changes
+   - PARTIAL: Some tests exist but coverage is incomplete
+   - UNTESTED: No tests for the changes
+
+5. **INTEGRATION**: Are callers updated? Is the feature usable end-to-end?
+   - WIRED: Feature is fully integrated and usable
+   - PARTIAL: Interface exists but callers not updated, or integration incomplete
+   - MISSING: No integration with existing code
+
+6. **BELIEF_COMPLIANCE** (only when beliefs are provided): Do the changes respect known architectural invariants, contracts, and rules?
+   - CONSISTENT: Changes align with or reinforce known beliefs
+   - VIOLATES: Changes contradict a specific belief — cite the belief ID
+   - N/A: No beliefs provided or no relevant beliefs apply
+
+## Verdict Guidelines
+
+- **BLOCK**: Security issues, broken functionality, spec violations, or missing critical integration
+- **CONCERN**: Missing tests, partial integration, questionable patterns, or unclear logic
+- **PASS**: Correct, tested, well-integrated code
+
+## Important
+
+- Full function bodies for modified functions may be available in the observations section — use them to verify the complete logic, not just the diff hunks
+- Related test files (prefixed with ``related_test:``) may be included in observations — check whether existing test assertions still match modified return types, signatures, or behavior. Flag any test that would break due to the changes
+- If duplicate test coverage is detected (multiple test files covering the same source), note it in your review
+- Focus on actual issues, not style preferences
+- If a method signature is added but callers aren't updated, that's PARTIAL integration
+- Be specific in reasoning - reference line numbers or function names
+- When in doubt, use CONCERN rather than PASS
+
+## Self-Review
+
+After completing your review, add a brief self-assessment:
+
+### SELF_REVIEW
+LIMITATIONS: <what context were you missing that affected review quality?>
+---
+
+Examples of limitations:
+- "Could not see full class to verify no other methods access the modified field"
+- "Test file not included in diff - cannot verify coverage claims"
+- "Spec file referenced but not provided"
+
+
+## Feature Requests
+
+If this review tool could be improved to help you do a better job, suggest features:
+
+### FEATURE_REQUESTS
+- <suggestion 1>
+- <suggestion 2>
+---
+
+Examples:
+- "Include full file context for modified functions, not just diff hunks"
+- "Show callers of modified methods to verify integration"
+- "Include test file alongside implementation changes"
+
+Only include this section if you have specific suggestions. Skip if none.

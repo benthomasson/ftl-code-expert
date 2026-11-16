@@ -1,0 +1,29 @@
+```json
+[
+  {"name": "extract_symbol_callers", "tool": "find_callers", "params": {"symbol": "extract_symbol"}},
+  {"name": "get_imports_callers", "tool": "find_callers", "params": {"symbol": "get_imports"}},
+  {"name": "find_related_tests_callers", "tool": "find_callers", "params": {"symbol": "find_related_tests"}},
+  {"name": "grep_obs_callers", "tool": "find_callers", "params": {"symbol": "grep", "file_path": "ftl_code_expert/observations.py"}},
+  {"name": "find_usages_callers", "tool": "find_callers", "params": {"symbol": "find_usages"}},
+  {"name": "find_symbol_callers", "tool": "find_callers", "params": {"symbol": "find_symbol"}},
+  {"name": "file_imports_callers", "tool": "find_callers", "params": {"symbol": "file_imports"}},
+  {"name": "list_source_files_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/git_utils.py", "function_name": "list_source_files"}},
+  {"name": "parse_observation_requests_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "parse_observation_requests"}},
+  {"name": "execute_observations_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "execute_observations"}},
+  {"name": "verify_prompt_template", "tool": "function_body", "params": {"file_path": "ftl_code_expert/prompts/verify.py", "function_name": "build_verify_prompt"}},
+  {"name": "observe_prompt_full", "tool": "function_body", "params": {"file_path": "ftl_code_expert/prompts/observe.py", "function_name": "build_observe_prompt"}},
+  {"name": "language_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/language.py"}},
+  {"name": "git_utils_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/git_utils.py"}},
+  {"name": "observations_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/observations.py"}},
+  {"name": "cli_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "detect_language_callers", "tool": "find_callers", "params": {"symbol": "detect_language"}},
+  {"name": "repo_path_to_entry_callers", "tool": "find_callers", "params": {"symbol": "_repo_path_to_entry_pattern"}},
+  {"name": "retract_beliefs_callers", "tool": "find_callers", "params": {"symbol": "_retract_beliefs_for_deleted_files"}},
+  {"name": "gather_source_files_callers", "tool": "find_callers", "params": {"symbol": "_gather_source_files"}},
+  {"name": "format_source_code_callers", "tool": "find_callers", "params": {"symbol": "_format_source_code"}},
+  {"name": "explore_concurrent_callers", "tool": "find_callers", "params": {"symbol": "_explore_topics_concurrent"}},
+  {"name": "build_function_prompt_callers", "tool": "find_callers", "params": {"symbol": "build_function_prompt"}},
+  {"name": "auto_gather_verify_callers", "tool": "find_callers", "params": {"symbol": "_auto_gather_verify_observations"}},
+  {"name": "verify_belief_callers", "tool": "find_callers", "params": {"symbol": "_verify_belief_with_observations"}}
+]
+```

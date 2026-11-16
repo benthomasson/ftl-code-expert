@@ -1,0 +1,13 @@
+```json
+[
+  {"name": "explore_topics_concurrent_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_explore_topics_concurrent"}},
+  {"name": "finalize_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_finalize_topic"}},
+  {"name": "run_file_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_run_file_topic"}},
+  {"name": "walk_commits_full", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "walk_commits"}},
+  {"name": "cli_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "explore_concurrent_exceptions", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_explore_topics_concurrent"}},
+  {"name": "finalize_topic_callers", "tool": "find_callers", "params": {"symbol": "_finalize_topic"}},
+  {"name": "topic_class_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/topics.py", "function_name": "__init__"}},
+  {"name": "walk_commits_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}}
+]
+```

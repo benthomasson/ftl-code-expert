@@ -1,0 +1,381 @@
+You are a senior code reviewer preparing to review code changes.
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 2baf921..e9dd5a3 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -34,6 +34,7 @@
+     PROPOSE_BELIEFS_CODE,
+     RESEARCH_INFER_FILES_PROMPT,
+     REVIEW_PROMPT,
++    VERIFY_INFER_FILE_PROMPT,
+     VERIFY_OBSERVE_PROMPT,
+     VERIFY_PROMPT,
+     build_diff_prompt,
+@@ -3146,6 +3147,36 @@ async def _verify_belief_with_observations(
+         belief, node, repo_path, project_dir,
+     )
+ 
++    tree = get_repo_structure(repo_path, max_depth=3)
++
++    if src_file is None:
++        try:
++            infer_prompt = VERIFY_INFER_FILE_PROMPT.format(
++                belief_id=bid,
++                belief_text=belief["text"],
++                repo_tree=tree,
++            )
++            infer_response = await invoke(infer_prompt, model, timeout=timeout)
++            inferred = _parse_inferred_files(infer_response)
++            if inferred:
++                candidate = inferred[0]
++                if not os.path.isabs(candidate) and ".." not in candidate.split("/"):
++                    abs_candidate = os.path.join(repo_path, candidate)
++                    if os.path.isfile(abs_candidate):
++                        src_file = candidate
++                        from .observations import read_file
++                        file_result = await read_file(src_file, repo_path, max_lines=500)
++                        auto_obs[f"source_file:{src_file}"] = file_result
++                        click.echo(f"  Inferred source file for {bid}: {src_file}", err=True)
++                        if _has_reasons() and Path("reasons.db").exists():
++                            try:
++                                from reasons_lib.api import set_metadata
++                                set_metadata(bid, "source_file", src_file)
++                            except Exception:
++                                pass
++        except Exception:
++            pass
++
+     seed_context = ""
+     source_key = f"source_file:{src_file}" if src_file else None
+     if source_key and source_key in auto_obs:
+@@ -3155,8 +3186,6 @@ async def _verify_belief_with_observations(
+             if len(content) > 4000:
+                 content = content[:4000] + "\n... (truncated)"
+             seed_context = f"### {src_file}\n```\n{content}\n```"
+-
+-    tree = get_repo_structure(repo_path, max_depth=2)
+     observe_prompt = VERIFY_OBSERVE_PROMPT.format(
+         belief_id=bid,
+         belief_text=belief["text"],
+@@ -4112,6 +4141,134 @@ def _collect_source_files(nid):
+         click.echo("\nCannot retract: reasons CLI not available.", err=True)
+ 
+ 
++# --- infer-sources ---
++
++
++@cli.command("infer-sources")
++@click.argument("belief_ids", nargs=-1)
++@click.option("--all", "infer_all", is_flag=True, default=False,
++              help="Infer source files for all IN beliefs missing source_file")
++@click.option("--dry-run", is_flag=True, default=False,
++              help="Show what would be inferred without calling LLM")
++@click.pass_context
++def infer_sources(ctx, belief_ids, infer_all, dry_run):
++    """Infer source files for beliefs that lack source_file metadata.
++
++    Uses an LLM to identify which source file a belief refers to based on
++    the belief text and repository structure, then stamps source_file metadata
++    so verify can find the relevant code.
++
++    Examples:
++        code-expert infer-sources my-belief-id
++        code-expert infer-sources --all --dry-run
++        code-expert infer-sources --all
++    """
++    model = ctx.obj["model"]
++    timeout = ctx.obj["timeout"]
++    parallel = ctx.obj["parallel"]
++    repo_path = _get_repo(ctx)
++    abs_repo = os.path.abspath(repo_path)
++
++    if not check_model_available(model):
++        click.echo(f"Error: Model '{model}' CLI not available", err=True)
++        sys.exit(1)
++
++    if not _has_reasons() or not Path("reasons.db").exists():
++        click.echo("Error: reasons.db not found", err=True)
++        sys.exit(1)
++
++    _reasons_export()
++
++    try:
++        network = _load_network()
++        nodes = network.get("nodes", {})
++    except Exception as e:
++        click.echo(f"Error loading belief network: {e}", err=True)
++        sys.exit(1)
++
++    candidates = []
++    if belief_ids:
++        for bid in belief_ids:
++            node = nodes.get(bid)
++            if not node:
++                click.echo(f"  Belief not found: {bid}", err=True)
++                continue
++            src = (node.get("metadata") or {}).get("source_file")
++            if src:
++                click.echo(f"  {bid}: already has source_file={src}", err=True)
++                continue
++            candidates.append({"id": bid, "text": node.get("text", "")})
++    elif infer_all:
++        for nid, node in nodes.items():
++            if node.get("truth_value") != "IN":
++                continue
++            src = (node.get("metadata") or {}).get("source_file")
++            if src:
++                continue
++            src = _extract_source_file(node.get("source", ""), _get_project_dir(ctx))
++            if src:
++                continue
++            candidates.append({"id": nid, "text": node.get("text", "")})
++    else:
++        click.echo("Specify belief IDs, or use --all.", err=True)
++        sys.exit(1)
++
++    if not candidates:
++        click.echo("No beliefs need source file inference.")
++        return
++
++    click.echo(f"Found {len(candidates)} belief(s) needing source file inference", err=True)
++
++    if dry_run:
++        for c in candidates:
++            click.echo(f"  {c['id']}: {c['text'][:100]}", err=True)
++        click.echo(f"\n--dry-run: stopping before LLM inference.", err=True)
++        return
++
++    tree = get_repo_structure(abs_repo, max_depth=3)
++    prompts = [
++        VERIFY_INFER_FILE_PROMPT.format(
++            belief_id=c["id"],
++            belief_text=c["text"],
++            repo_tree=tree,
++        )
++        for c in candidates
++    ]
++
++    click.echo(f"Inferring source files with {model}...", err=True)
++    results = invoke_concurrent_sync(prompts, model=model, timeout=timeout, max_concurrent=parallel)
++
++    from reasons_lib.api import set_metadata
++    stamped = 0
++    for i, result in enumerate(results):
++        bid = candidates[i]["id"]
++        if isinstance(result, Exception):
++            click.echo(f"  {bid}: error — {result}", err=True)
++            continue
++        inferred = _parse_inferred_files(result)
++        if not inferred:
++            click.echo(f"  {bid}: no file inferred", err=True)
++            continue
++        candidate = inferred[0]
++        if os.path.isabs(candidate) or ".." in candidate.split("/"):
++            click.echo(f"  {bid}: unsafe path {candidate}", err=True)
++            continue
++        abs_path = os.path.join(abs_repo, candidate)
++        if not os.path.isfile(abs_path):
++            click.echo(f"  {bid}: {candidate} not found", err=True)
++            continue
++        try:
++            set_metadata(bid, "source_file", candidate)
++            stamped += 1
++            click.echo(f"  {bid}: {candidate}", err=True)
++        except Exception as e:
++            click.echo(f"  {bid}: failed to stamp — {e}", err=True)
++
++    click.echo(f"\nInferred source_file for {stamped}/{len(candidates)} belief(s)", err=True)
++    if stamped:
++        _reasons_export()
++
++
+ # --- update ---
+ 
+ 
+diff --git a/ftl_code_expert/prompts/__init__.py b/ftl_code_expert/prompts/__init__.py
+index 2d6fb0b..1333276 100644
+--- a/ftl_code_expert/prompts/__init__.py
++++ b/ftl_code_expert/prompts/__init__.py
+@@ -9,7 +9,7 @@
+ from .propose import PROPOSE_BELIEFS_CODE
+ from .research import RESEARCH_INFER_FILES_PROMPT
+ from .review import REVIEW_PROMPT
+-from .verify import VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT
++from .verify import VERIFY_INFER_FILE_PROMPT, VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT
+ from .repo import build_repo_prompt
+ from .scan import build_scan_prompt
+ from .spec import GENERATE_SPEC_PROMPT
+@@ -21,6 +21,7 @@
+     "PROPOSE_BELIEFS_CODE",
+     "RESEARCH_INFER_FILES_PROMPT",
+     "REVIEW_PROMPT",
++    "VERIFY_INFER_FILE_PROMPT",
+     "VERIFY_OBSERVE_PROMPT",
+     "VERIFY_PROMPT",
+     "TOPICS_INSTRUCTIONS",
+diff --git a/ftl_code_expert/prompts/verify.py b/ftl_code_expert/prompts/verify.py
+index 67ae6cc..4dea558 100644
+--- a/ftl_code_expert/prompts/verify.py
++++ b/ftl_code_expert/prompts/verify.py
+@@ -83,3 +83,34 @@
+ ## Beliefs to Verify
+ 
+ {beliefs}"""
++
++
++VERIFY_INFER_FILE_PROMPT = """\
++You are identifying which source file a belief about a codebase refers to.
++
++## Belief
++
++**ID:** {belief_id}
++
++**Claim:** {belief_text}
++
++## Repository structure
++
++```
++{repo_tree}
++```
++
++## Instructions
++
++Based on the belief ID and claim text, identify the single source file in the repository \
++that this belief is primarily about. The file must exist in the repository structure above.
++
++Output a JSON array with exactly one file path relative to the repository root.
++
++Example output:
++```json
++["src/auth/handler.py"]
++```
++
++Output ONLY the JSON array, nothing else.
++"""
+
+```
+
+## Your Task
+
+Analyze the diff and identify what additional information you need to render confident verdicts.
+Do NOT render verdicts yet. Only request observations.
+
+## Available Observation Tools
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `exception_hierarchy` | Show exception MRO and subclasses | Retry logic, exception handling |
+| `raises_analysis` | What exceptions a function raises | New function calls, error paths |
+| `call_graph` | What a function calls | Impact analysis |
+| `find_usages` | Where a symbol is used (with prod/test split) | Quick integration lookup |
+| `find_callers` | Caller analysis with prod/test split and calling context | Method signature changes, return type changes, constructor modifications, integration verification |
+| `test_coverage` | Find tests for a file (uses coverage-map if available) | Test coverage claims |
+| `coverage_map_tests` | Find tests covering a file (from coverage-map.json) | Precise test coverage from actual execution |
+| `coverage_map_files` | Find files covered by tests matching a pattern | Impact analysis for test changes |
+| `function_body` | Full source of a function/method | Need complete function context beyond diff hunks |
+| `file_imports` | Extract imports from a file | Verify import changes, check dependencies |
+| `project_dependencies` | Get pyproject.toml/requirements.txt | Verify new imports have dependencies |
+| `related_test_files` | Find test files for a source file | Discover tests by naming, imports, and coverage map |
+| `class_hierarchy` | Show base classes and their `__init__` signatures | Class changes its parent, modifies `__init__`, or uses `super()` |
+| `symbol_migration` | Check if a rename is complete across the repo | Symbol renamed in diff — verify old name is fully removed |
+| `generator_info` | Report whether a function uses `yield` | Function might be a generator — affects return value semantics |
+
+## What to Look For
+
+1. **Exception handling**: Any `retry_if_exception_type`, `except`, or exception class references
+2. **New dependencies**: Calls to external libraries where you don't know the error behavior
+3. **Behavioral changes**: Modified logic where you need to verify callers/callees
+4. **Test claims**: References to tests you can't see in the diff
+5. **Inheritance changes**: Class definition changes, new base classes, `super()` calls
+6. **Renames**: Symbols that appear to have been renamed in the diff
+7. **Factory methods**: Calls to `@classmethod` / `@staticmethod` constructors (e.g. `Result.error(...)`) — request `function_body` to see their implementation
+
+## Output Format
+
+Output a JSON array of observation requests:
+
+```json
+[
+  {"name": "descriptive_name", "tool": "tool_name", "params": {"param": "value"}},
+  ...
+]
+```
+
+If you don't need any observations (simple changes, all context is in the diff), output:
+
+```json
+[]
+```
+
+## Examples
+
+For a diff containing `retry_if_exception_type((OSError, httpx.TransportError))`:
+```json
+[
+  {"name": "oserror_subclasses", "tool": "exception_hierarchy", "params": {"class_name": "builtins.OSError"}},
+  {"name": "transport_errors", "tool": "exception_hierarchy", "params": {"class_name": "httpx.TransportError"}}
+]
+```
+
+For a diff adding a new function that calls `oauth_client.get_access_token()`:
+```json
+[
+  {"name": "oauth_exceptions", "tool": "raises_analysis", "params": {"file_path": "src/auth/oauth.py", "function_name": "get_access_token"}}
+]
+```
+
+For a diff modifying a method but you need the full function to verify:
+```json
+[
+  {"name": "full_getattr", "tool": "function_body", "params": {"file_path": "src/proxy.py", "function_name": "__getattr__"}}
+]
+```
+
+For a diff changing a method signature or return type (verify all callers):
+```json
+[
+  {"name": "handle_request_callers", "tool": "find_callers", "params": {"symbol": "handle_request"}}
+]
+```
+
+For a diff adding new imports (e.g., `import httpx`):
+```json
+[
+  {"name": "file_imports", "tool": "file_imports", "params": {"file_path": "src/client.py"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}}
+]
+```
+
+For a diff calling a factory method like `ModuleResult.error_result(msg)`:
+```json
+[
+  {"name": "error_result_body", "tool": "function_body", "params": {"file_path": "src/models.py", "function_name": "error_result"}}
+]
+```
+
+For a diff where a class changes its parent class:
+```json
+[
+  {"name": "client_hierarchy", "tool": "class_hierarchy", "params": {"class_name": "MyClient", "file_path": "src/client.py"}}
+]
+```
+
+For a diff that renames a symbol (e.g., `OldClient` to `NewClient`):
+```json
+[
+  {"name": "client_rename", "tool": "symbol_migration", "params": {"old_name": "OldClient", "new_name": "NewClient"}}
+]
+```
+
+For a diff modifying a function that might be a generator:
+```json
+[
+  {"name": "process_gen", "tool": "generator_info", "params": {"file_path": "src/pipeline.py", "function_name": "process_items"}}
+]
+```
+
+Now analyze the diff above and output your observation requests as JSON:

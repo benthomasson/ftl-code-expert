@@ -1,0 +1,15 @@
+```json
+[
+  {"name": "observations_module", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/observations.py"}},
+  {"name": "read_file_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "read_file"}},
+  {"name": "find_usages_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "find_usages"}},
+  {"name": "grep_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "grep"}},
+  {"name": "find_symbol_usage_in_auto_gather", "tool": "find_usages", "params": {"symbol": "find_symbol"}},
+  {"name": "get_repo_structure_import", "tool": "find_usages", "params": {"symbol": "get_repo_structure"}},
+  {"name": "extract_source_file_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_extract_source_file"}},
+  {"name": "has_reasons_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_has_reasons"}},
+  {"name": "invoke_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/llm.py", "function_name": "invoke"}},
+  {"name": "run_observations_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "run_observations"}},
+  {"name": "reasons_export_behavior", "tool": "find_usages", "params": {"symbol": "reasons export"}}
+]
+```

@@ -1,0 +1,93 @@
+{
+  "language_profile_class": {
+    "error": "No function found at 'LanguageProfile'",
+    "file": "ftl_code_expert/language.py"
+  },
+  "go_profile_usages": {
+    "symbol": "LANGUAGE_REGISTRY",
+    "usages": [
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 136,
+        "text": "LANGUAGE_REGISTRY: dict[str, LanguageProfile] = {"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 161,
+        "text": "if lang_name in LANGUAGE_REGISTRY:"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 162,
+        "text": "return LANGUAGE_REGISTRY[lang_name]"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 179,
+        "text": "for lang in LANGUAGE_REGISTRY.values():"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 136,
+        "text": "LANGUAGE_REGISTRY: dict[str, LanguageProfile] = {"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 161,
+        "text": "if lang_name in LANGUAGE_REGISTRY:"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 162,
+        "text": "return LANGUAGE_REGISTRY[lang_name]"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 179,
+        "text": "for lang in LANGUAGE_REGISTRY.values():"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 4,
+    "test_count": 0,
+    "total_count": 4
+  },
+  "go_tests": {
+    "source_file": "ftl_code_expert/language.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "config_to_language": {
+    "symbol": "_CONFIG_TO_LANGUAGE",
+    "usages": [
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 143,
+        "text": "_CONFIG_TO_LANGUAGE: dict[str, str] = {"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 159,
+        "text": "for config_file, lang_name in _CONFIG_TO_LANGUAGE.items():"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 143,
+        "text": "_CONFIG_TO_LANGUAGE: dict[str, str] = {"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 159,
+        "text": "for config_file, lang_name in _CONFIG_TO_LANGUAGE.items():"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  }
+}

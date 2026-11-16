@@ -1,0 +1,47 @@
+### ftl_code_expert/cli.py:_parse_verify_response
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The parsing logic is correct and uses a robust `re.search(..., re.DOTALL)` pattern to extract JSON blocks. However, the outer `try-except` block surrounds the entire dictionary iteration. If the LLM returns an unexpected non-string type for a single belief's verdict, calling `.upper()` will raise an `AttributeError`, causing the entire parsed results dictionary to be discarded and returning `{}`. This marks the entire batch as `INCONCLUSIVE` due to a single malformed item. A safer, more granular type validation of individual items within the loop is recommended.
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The verification command is well-implemented and fully integrated with the `reasons` CLI. It properly supports diverse selection options (`--category`, `--gated`, `--negative`, `--all`), gathers asynchronous code context in batches, handles LLM invocation with fallbacks, and automates retraction of stale beliefs. The verdict is set to CONCERN solely because the repository lacks any automated tests or test runner configurations, leaving the command entirely untested.
+---
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The prompt template contains clear, unambiguous instructions, a structured JSON format contract, and a helpful multi-verdict example. It correctly utilizes double curly braces (`{{` and `}}`) to escape the JSON payload structure from Python's `.format()` interpreter.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: `VERIFY_PROMPT` is correctly imported and registered under the package-level `__all__` exports, making it seamlessly available to `cli.py`.
+---
+
+### SELF_REVIEW
+LIMITATIONS: A complete codebase search was performed, confirming that there is no active test directory or testing configurations (such as pytest or unittest) in this repository. Consequently, no existing tests could be executed or verified for coverage.
+---

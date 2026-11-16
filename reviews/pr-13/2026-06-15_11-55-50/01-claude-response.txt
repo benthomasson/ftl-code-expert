@@ -1,0 +1,47 @@
+## Code Review
+
+### ftl_code_expert/cli.py:_accept_proposals
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING:
+
+1. **`set-metadata` return code silently ignored** (line 1653-1657): If `reasons set-metadata` fails, there's no log or feedback. The fallback in `_gather_belief_context` covers this, so it's not a blocker, but a failed metadata write is worth a debug-level message — otherwise a misconfigured `reasons` binary silently degrades every accept run.
+
+2. **Only new beliefs get metadata**: When `already exists` is hit (skipped path), no metadata is set. If this feature is backfilled onto a codebase with existing beliefs, those beliefs will never get `source_file` metadata unless re-accepted. Consider setting metadata on the skipped path too, or document this as intentional.
+
+3. **`beliefs` CLI fallback (line 1680+) doesn't set metadata**: The second fallback path for `beliefs add` doesn't call `set-metadata`. Since `_gather_belief_context` reads metadata from `nodes` (reasons-backed), this is probably fine, but it's an asymmetry that could confuse future readers.
+
+4. **No tests**: Observation confirms 0 test callers for `_accept_proposals`. The new subprocess call path is entirely untested.
+
+---
+
+### ftl_code_expert/cli.py:_gather_belief_context
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING:
+
+The `(node.get("metadata") or {}).get("source_file")` pattern correctly handles all null/missing cases: missing `metadata` key, explicit `None` metadata, empty dict, and present metadata without `source_file`. The fallback to `_extract_source_file(source, project_dir)` preserves backward compatibility for beliefs that predate this feature. Clean optimization — avoids disk I/O when metadata is already cached.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Could not verify the `reasons set-metadata` CLI interface (argument order, behavior on non-existent node) — review assumes it works as the code implies.
+- No tests exist for either modified function, so I cannot verify test assertions remain valid.
+- Could not see how `node["metadata"]` is populated by the `reasons` CLI to confirm the key name `source_file` round-trips correctly between write and read.
+---
+
+### FEATURE_REQUESTS
+- Include the schema or CLI help for external tools (`reasons set-metadata`) when they appear in subprocess calls, so reviewers can verify argument order and behavior.
+- Flag when modified functions have zero test coverage — the observation data includes this, but a prominent warning at the top of the review context would help.
+---

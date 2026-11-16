@@ -1,0 +1,102 @@
+# Code Review Report
+
+**Branch:** benthomasson/ftl-code-expert#24
+**Models:** claude, gemini
+**Gate:** [CONCERN] CONCERN
+
+## claude [CONCERN]
+
+## gemini [CONCERN]
+
+### ftl_code_expert/language.py
+**Verdict:** CONCERN
+**Correctness:** QUESTIONABLE
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+1. **Path-mangling bug in `module_name_from_path`**:
+   ```python
+   def module_name_from_path(self, rel_path: str) -> str:
+       name = rel_path.replace(self.primary_extension, "")
+   ```
+   If the `primary_extension` is `".py"`, `.replace(".py", "")` will replace all occurrences anywhere in the path, rather than just stripping the suffix. For example, `src/py_extensions/copy_helper.py` will be mangled into `src/_extensions/co_helper`. It should be stripped using slicing, e.g., `rel_path[:-len(self.primary_extension)]` or `os.path.splitext`.
+2. **Brace-matching logic limitation on prototypes**:
+   In `_extract_symbol_brace`, if a C++ or Rust symbol is a function prototype declaration (e.g. `void foo();` in a header file or a trait method without a body), there is no opening `{`. This causes the parser to read to the end of the file, returning the entire rest of the file as the symbol's source.
+3. **No tests**: This new file introduces critical parsing and classification code but has no corresponding unit tests.
+
+### ftl_code_expert/cli.py
+**Verdict:** CONCERN
+**Correctness:** QUESTIONABLE
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+1. **C++ header file reconstruction bug in `_gather_source_files`**:
+   ```python
+   path = "src/" + m.group(1).replace("-", "/") + lang.primary_extension
+   ```
+   If a C++ repository uses `.h` or `.hpp` extensions for headers, `_repo_path_to_entry_pattern` preserves the suffix because it doesn't end in the primary extension `.cpp`. This results in an entry name like `src-helper.h`. But `_gather_source_files` will blindly append `lang.primary_extension` to the end, resulting in `src/helper.h.cpp`, which leads to file-not-found errors during specification generation.
+2. **Cargo.toml binary parsing bug in `_find_entry_points`**:
+   ```python
+   if in_section:
+       if line.startswith("["):
+           break
+   ```
+   If a Rust project defines multiple binary targets with multiple `[[bin]]` sections, the parser will successfully detect the first `[[bin]]` section, but when it encounters the second `[[bin]]` line, it will trigger the `line.startswith("[")` break and terminate early, missing subsequent binary entry points.
+3. **Potential TypeError due to signature mismatch on `build_observe_prompt`**:
+   In `_verify_belief_with_observations` (line 3191), `build_observe_prompt` is called with keyword arguments `belief_text` and `seed_context`. However, the definition in `ftl_code_expert/prompts/observe.py` only accepts `question`, `tree`, and `default_glob`. Unless overridden locally within the 50-line gap not visible in the diff, this will raise a `TypeError` at runtime.
+
+### ftl_code_expert/git_utils.py
+**Verdict:** PASS
+**Correctness:** VALID
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+- Integration of `LanguageProfile` in `get_imports`, `extract_symbol`, and `find_related_tests` is correct and follows established language-specific semantics.
+- *Performance Concern:* Running `root.rglob` for each element in `lang.source_globs` and `lang.test_globs` in `get_imports` and `find_related_tests` means performing up to 8 separate full directory scans for C++ projects. On large repositories, this will be extremely slow. Traversing the directory tree once and checking extensions against `lang.source_extensions` would be significantly more efficient.
+
+### ftl_code_expert/observations.py
+**Verdict:** PASS
+**Correctness:** VALID
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+- All methods (`grep`, `find_symbol`, `find_usages`, `file_imports`) correctly accept a `lang` argument and leverage it to search files matching the language's specific source globs, definition patterns, and import prefixes.
+
+### ftl_code_expert/prompts/function.py
+**Verdict:** PASS
+**Correctness:** VALID
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+- Updated cleanly to accept a `language` parameter, ensuring correct markdown code fence syntax highlighting (e.g., `cpp`, `rust`) for explained functions.
+
+### ftl_code_expert/prompts/observe.py
+**Verdict:** PASS
+**Correctness:** VALID
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+- Successfully parameterized with `{default_glob}` to dynamically tailor observation-gathering instructions to the target codebase's primary language.
+
+### ftl_code_expert/prompts/verify.py
+**Verdict:** PASS
+**Correctness:** VALID
+**Spec Compliance:** N/A
+**Test Coverage:** UNTESTED
+**Integration:** WIRED
+
+- Safely parameters-adjusted to dynamically instruct models to use language-specific globs for `grep` operations during belief verification.
+
+### Self-Review
+**Limitations:** - Could not see the full 50-line surrounding context inside `_verify_belief_with_observations` to confirm whether `build_observe_prompt` was locally overridden/imported or if the call will fail with a `TypeError` due to signature mismatch.
+- Could not verify if there are any unit tests at all in the workspace since test_count returned 0 for all scanned modules.
+
+### Feature Requests
+- Please provide full file contents or larger surrounding context for functions modified across wide gaps to avoid missing local imports or variable initializations.
+- Include the main test suite output or run a quick test check to confirm whether existing unit tests are passing.

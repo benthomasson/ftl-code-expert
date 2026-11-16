@@ -1,0 +1,182 @@
+{
+  "load_network_body": {
+    "function": "_load_network",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2706,
+    "end_line": 2719,
+    "source": "def _load_network() -> dict:\n    \"\"\"Load network.json (exported from reasons).\"\"\"\n    network_path = Path(\"network.json\")\n    if not network_path.exists():\n        # Try exporting from reasons\n        if _has_reasons():\n            import subprocess\n            result = subprocess.run(\n                [\"reasons\", \"export\"], capture_output=True, text=True,\n            )\n            if result.returncode == 0:\n                return json.loads(result.stdout)\n        return {\"nodes\": {}}\n    return json.loads(network_path.read_text())"
+  },
+  "find_gated_out_beliefs_body": {
+    "function": "_find_gated_out_beliefs",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3330,
+    "end_line": 3355,
+    "source": "def _find_gated_out_beliefs(nodes: dict) -> list[dict]:\n    \"\"\"Find gated OUT beliefs and their active blockers.\"\"\"\n    results = []\n    for nid, node in nodes.items():\n        if node.get(\"truth_value\") != \"OUT\":\n            continue\n        if node.get(\"metadata\", {}).get(\"superseded_by\"):\n            continue\n        for j in node.get(\"justifications\", []):\n            if not j.get(\"outlist\"):\n                continue\n            active_blockers = [\n                oid for oid in j[\"outlist\"]\n                if oid in nodes and nodes[oid].get(\"truth_value\") == \"IN\"\n            ]\n            if active_blockers:\n                results.append({\n                    \"id\": nid,\n                    \"text\": node.get(\"text\", \"\"),\n                    \"blockers\": [\n                        {\"id\": bid, \"text\": nodes[bid].get(\"text\", \"\")}\n                        for bid in active_blockers\n                    ],\n                })\n                break\n    return results"
+  },
+  "get_negative_beliefs_body": {
+    "function": "_get_negative_beliefs",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3370,
+    "end_line": 3384,
+    "source": "def _get_negative_beliefs(nodes: dict, model: str = \"claude\") -> list[dict]:\n    \"\"\"Get negative IN beliefs, preferring reasons list-negative when available.\"\"\"\n    if _has_reasons():\n        result = subprocess.run(\n            [\"reasons\", \"list-negative\", \"-m\", model],\n            capture_output=True, text=True,\n        )\n        if result.returncode == 0:\n            beliefs = []\n            for line in result.stdout.splitlines():\n                m = re.match(r\"\\s*\\[-\\]\\s+([\\w-]+):\\s+(.+)\", line)\n                if m:\n                    beliefs.append({\"id\": m.group(1), \"text\": m.group(2)})\n            return beliefs\n    return _find_negative_in_beliefs(nodes)"
+  },
+  "gather_confirmation_context_body": {
+    "function": "_gather_confirmation_context",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3033,
+    "end_line": 3051,
+    "source": "async def _gather_confirmation_context(\n    beliefs: list[dict],\n    nodes: dict,\n    repo_path: str,\n    project_dir: str | None = None,\n) -> dict[str, str]:\n    \"\"\"Gather code context for confirming whether beliefs still hold.\"\"\"\n    tasks = [\n        _gather_belief_context(b, nodes, repo_path, project_dir)\n        for b in beliefs\n    ]\n    results = await asyncio.gather(*tasks, return_exceptions=True)\n    contexts: dict[str, str] = {}\n    for i, result in enumerate(results):\n        if isinstance(result, Exception):\n            contexts[beliefs[i][\"id\"]] = \"(error gathering context)\"\n        else:\n            contexts[result[0]] = result[1]\n    return contexts"
+  },
+  "invoke_sync_raises": {
+    "function": "invoke_sync",
+    "file": "ftl_code_expert/cli.py",
+    "explicit_raises": [],
+    "calls": [],
+    "error": "Function 'invoke_sync' not found"
+  },
+  "has_reasons_body": {
+    "function": "_has_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 155,
+    "end_line": 157,
+    "source": "def _has_reasons() -> bool:\n    \"\"\"Check if ftl-reasons CLI is available.\"\"\"\n    return shutil.which(\"reasons\") is not None"
+  },
+  "reasons_export_body": {
+    "function": "_reasons_export",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2200,
+    "end_line": 2219,
+    "source": "def _reasons_export():\n    \"\"\"Re-export beliefs.md and network.json from reasons after adding beliefs.\"\"\"\n    beliefs_path = Path(\"beliefs.md\")\n    network_path = Path(\"network.json\")\n\n    result = subprocess.run(\n        [\"reasons\", \"export-markdown\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        beliefs_path.write_text(result.stdout)\n        click.echo(f\"Updated {beliefs_path}\")\n\n    result = subprocess.run(\n        [\"reasons\", \"export\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        network_path.write_text(result.stdout)\n        click.echo(f\"Updated {network_path}\")"
+  },
+  "verify_tests": {
+    "error": "Parameter error: related_test_files() missing 1 required positional argument: 'file_path'",
+    "params_received": [
+      "source_file"
+    ]
+  },
+  "parse_verify_response_usages": {
+    "symbol": "_parse_verify_response",
+    "usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3688,
+        "text": "def _parse_verify_response(response: str) -> dict[str, dict]:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3841,
+        "text": "results = _parse_verify_response(response)"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3688,
+        "text": "def _parse_verify_response(response: str) -> dict[str, dict]:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3841,
+        "text": "results = _parse_verify_response(response)"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "research_command_body": {
+    "function": "research",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3523,
+    "end_line": 3682,
+    "source": "@cli.command(\"research\")\n@click.option(\"--review-file\", required=True, type=click.Path(exists=True),\n              help=\"Path to review JSON file (from review-beliefs)\")\n@click.option(\"--limit\", type=int, default=None,\n              help=\"Max candidates to research\")\n@click.option(\"--dry-run\", is_flag=True, default=False,\n              help=\"Show candidates and inferred files without exploring\")\n@click.pass_context\ndef research(ctx, review_file, limit, dry_run):\n    \"\"\"Evidence-driven exploration from belief review gaps.\n\n    Reads a review JSON file (from review-beliefs), identifies beliefs\n    lacking evidence, infers which source files to explore, then runs\n    the explore \u2192 propose \u2192 accept pipeline.\n\n    Example:\n        code-expert research --review-file reviews/review-beliefs-2026-06-13.json\n        code-expert research --review-file review.json --dry-run\n        code-expert -j 5 research --review-file review.json\n    \"\"\"\n    from .caffeinate import hold as _caffeinate\n    _caffeinate()\n\n    model = ctx.obj[\"model\"]\n    timeout = ctx.obj[\"timeout\"]\n    parallel = ctx.obj[\"parallel\"]\n    repo_path = _get_repo(ctx)\n    abs_repo = os.path.abspath(repo_path)\n\n    if not check_model_available(model):\n        click.echo(f\"Error: Model '{model}' CLI not available\", err=True)\n        sys.exit(1)\n\n    # Step 1: Parse review and find candidates\n    candidates = _parse_review_candidates(review_file)\n    if not candidates:\n        click.echo(\"No research candidates found (all beliefs have sufficient evidence).\")\n        return\n\n    if limit:\n        candidates = candidates[:limit]\n\n    click.echo(f\"Found {len(candidates)} research candidate(s)\", err=True)\n    for c in candidates:\n        status = []\n        if not c.get(\"valid\", True):\n            status.append(\"invalid\")\n        if not c.get(\"sufficient\", True):\n            status.append(\"insufficient\")\n        click.echo(f\"  {c['id']} [{', '.join(status)}]\", err=True)\n        click.echo(f\"    {c['comment'][:120]}\", err=True)\n\n    # Step 2: Load belief network for claim text\n    try:\n        network = _load_network()\n        nodes = network.get(\"nodes\", {})\n    except Exception:\n        nodes = {}\n\n    # Step 3: Collect already-explored files\n    explored = _get_explored_files()\n    if explored:\n        click.echo(f\"\\n{len(explored)} files already explored\", err=True)\n\n    # Step 4: Infer source files via LLM\n    click.echo(f\"\\nInferring source files with {model}...\", err=True)\n    repo_tree = get_repo_structure(abs_repo, max_depth=3)\n    explored_list = \"\\n\".join(f\"- {f}\" for f in sorted(explored)) if explored else \"(none)\"\n\n    prompts = []\n    for c in candidates:\n        node = nodes.get(c[\"id\"], {})\n        belief_text = node.get(\"text\", c[\"id\"])\n        prompts.append(RESEARCH_INFER_FILES_PROMPT.format(\n            belief_id=c[\"id\"],\n            belief_text=belief_text,\n            comment=c[\"comment\"],\n            repo_tree=repo_tree,\n            explored_files=explored_list,\n        ))\n\n    results = invoke_concurrent_sync(prompts, model=model, timeout=timeout, max_concurrent=parallel)\n\n    # Step 5: Collect and deduplicate inferred files\n    all_files: dict[str, list[str]] = {}  # file_path \u2192 list of belief_ids that need it\n    for i, result in enumerate(results):\n        candidate = candidates[i]\n        if isinstance(result, Exception):\n            click.echo(f\"  Error inferring files for {candidate['id']}: {result}\", err=True)\n            continue\n        files = _parse_inferred_files(result)\n        click.echo(f\"  {candidate['id']}: {files}\", err=True)\n        for f in files:\n            if os.path.isabs(f) or \"..\" in f.split(os.sep):\n                click.echo(f\"    Skipping {f} (unsafe path)\", err=True)\n                continue\n            abs_path = os.path.join(abs_repo, f)\n            if not os.path.isfile(abs_path):\n                click.echo(f\"    Skipping {f} (not found)\", err=True)\n                continue\n            if f in explored:\n                click.echo(f\"    Skipping {f} (already explored)\", err=True)\n                continue\n            all_files.setdefault(f, []).append(candidate[\"id\"])\n\n    if not all_files:\n        click.echo(\"\\nNo new files to explore.\", err=True)\n        return\n\n    click.echo(f\"\\n{len(all_files)} file(s) to explore:\", err=True)\n    for f, belief_ids in all_files.items():\n        click.echo(f\"  {f} (for: {', '.join(belief_ids)})\", err=True)\n\n    if dry_run:\n        click.echo(\"\\n--dry-run: stopping before exploration.\", err=True)\n        return\n\n    # Step 6: Build topics and explore\n    from .topics import Topic\n    topics = [\n        Topic(\n            title=f\"Research: evidence for {', '.join(belief_ids)}\",\n            kind=\"file\",\n            target=file_path,\n            source=f\"research:{','.join(belief_ids)}\",\n        )\n        for file_path, belief_ids in all_files.items()\n    ]\n\n    click.echo(f\"\\nExploring {len(topics)} file(s)...\", err=True)\n    if parallel > 1 and len(topics) > 1:\n        batch_results = asyncio.run(\n            _explore_topics_concurrent(topics, model, abs_repo, timeout, parallel)\n        )\n        for r in batch_results:\n            if isinstance(r, Exception):\n                click.echo(f\"  Error: {r}\", err=True)\n            elif r is not None:\n                _, result, entry_name, entry_title, source = r\n                _finalize_topic(ctx, entry_name, entry_title, source, result)\n    else:\n        for topic in topics:\n            try:\n                _run_file_topic(ctx, topic, model, abs_repo)\n            except (SystemExit, Exception) as e:\n                click.echo(f\"  Error exploring {topic.target}: {e}\", err=True)\n\n    # Step 7: Propose and accept beliefs from new entries\n    click.echo(f\"\\n{'=' * 40}\", err=True)\n    click.echo(\"Proposing and accepting beliefs from new entries...\", err=True)\n    click.echo(f\"{'=' * 40}\", err=True)\n    try:\n        ctx.invoke(propose_beliefs, auto_accept=True)\n    except SystemExit as e:\n        if e.code and e.code != 0:\n            click.echo(f\"WARN: propose-beliefs failed (exit {e.code})\", err=True)\n    except Exception as e:\n        click.echo(f\"WARN: propose-beliefs failed: {e}\", err=True)\n\n    click.echo(\"\\nResearch complete. Run `code-expert derive` to attempt rejustification.\", err=True)"
+  },
+  "verify_prompt_imports": {
+    "file": "ftl_code_expert/prompts/__init__.py",
+    "imports": [],
+    "from_imports": [
+      {
+        "module": "common",
+        "names": [
+          "BELIEFS_INSTRUCTIONS",
+          "TOPICS_INSTRUCTIONS"
+        ]
+      },
+      {
+        "module": "diff",
+        "names": [
+          "build_diff_prompt",
+          "build_diff_summary_prompt"
+        ]
+      },
+      {
+        "module": "file",
+        "names": [
+          "build_file_prompt"
+        ]
+      },
+      {
+        "module": "function",
+        "names": [
+          "build_function_prompt"
+        ]
+      },
+      {
+        "module": "observe",
+        "names": [
+          "build_observe_prompt"
+        ]
+      },
+      {
+        "module": "derive",
+        "names": [
+          "DERIVE_BELIEFS_PROMPT"
+        ]
+      },
+      {
+        "module": "propose",
+        "names": [
+          "PROPOSE_BELIEFS_CODE"
+        ]
+      },
+      {
+        "module": "research",
+        "names": [
+          "RESEARCH_INFER_FILES_PROMPT"
+        ]
+      },
+      {
+        "module": "review",
+        "names": [
+          "REVIEW_PROMPT"
+        ]
+      },
+      {
+        "module": "verify",
+        "names": [
+          "VERIFY_PROMPT"
+        ]
+      },
+      {
+        "module": "repo",
+        "names": [
+          "build_repo_prompt"
+        ]
+      },
+      {
+        "module": "scan",
+        "names": [
+          "build_scan_prompt"
+        ]
+      },
+      {
+        "module": "spec",
+        "names": [
+          "GENERATE_SPEC_PROMPT"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"Prompt templates for code expert.\"\"\"\n\nfrom .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS\nfrom .diff import build_diff_prompt, build_diff_summary_prompt\nfrom .file import build_file_prompt\nfrom .function import build_function_prompt\nfrom .observe import build_observe_prompt\nfrom .derive import DERIVE_BELIEFS_PROMPT\nfrom .propose import PROPOSE_BELIEFS_CODE\nfrom .research import RESEARCH_INFER_FILES_PROMPT\nfrom .review import REVIEW_PROMPT\nfrom .verify import VERIFY_PROMPT\nfrom .repo import build_repo_prompt\nfrom .scan import build_scan_prompt\nfrom .spec import GENERATE_SPEC_PROMPT\n\n__all__ = [\n    \"BELIEFS_INSTRUCTIONS\",\n    \"DERIVE_BELIEFS_PROMPT\",\n    \"GENERATE_SPEC_PROMPT\",\n    \"PROPOSE_BELIEFS_CODE\",\n    \"RESEARCH_INFER_FILES_PROMPT\",\n    \"REVIEW_PROMPT\",\n    \"VERIFY_PROMPT\",\n    \"TOPICS_INSTRUCTIONS\",\n    \"build_diff_prompt\",\n    \"build_diff_summary_prompt\",\n    \"build_file_prompt\",\n    \"build_function_prompt\",\n    \"build_observe_prompt\",\n    \"build_repo_prompt\",\n    \"build_scan_prompt\",\n]\n"
+  }
+}

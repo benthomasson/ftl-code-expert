@@ -1,0 +1,8 @@
+```json
+[
+  {"name": "language_profile_class", "tool": "function_body", "params": {"file_path": "ftl_code_expert/language.py", "function_name": "LanguageProfile"}},
+  {"name": "go_profile_usages", "tool": "find_usages", "params": {"symbol": "LANGUAGE_REGISTRY"}},
+  {"name": "go_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/language.py"}},
+  {"name": "config_to_language", "tool": "function_body", "params": {"file_path": "ftl_code_expert/language.py", "function_name": "_CONFIG_TO_LANGUAGE"}}
+]
+```

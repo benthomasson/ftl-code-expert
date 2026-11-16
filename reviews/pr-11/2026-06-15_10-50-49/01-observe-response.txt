@@ -1,0 +1,16 @@
+```json
+[
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "find_gated_out_beliefs_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_find_gated_out_beliefs"}},
+  {"name": "get_negative_beliefs_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_get_negative_beliefs"}},
+  {"name": "gather_confirmation_context_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_gather_confirmation_context"}},
+  {"name": "invoke_sync_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_sync"}},
+  {"name": "invoke_sync_raises", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_sync"}},
+  {"name": "has_reasons_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_has_reasons"}},
+  {"name": "reasons_export_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_reasons_export"}},
+  {"name": "cli_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "verify_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "asyncio_run_usages", "tool": "find_usages", "params": {"symbol": "asyncio.run"}},
+  {"name": "parse_verify_callers", "tool": "find_callers", "params": {"symbol": "_parse_verify_response"}}
+]
+```

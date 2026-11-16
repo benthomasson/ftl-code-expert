@@ -1,0 +1,46 @@
+Here's my review of the `analyze` command.
+
+---
+
+### ftl_code_expert/cli.py:analyze
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING:
+
+**1. `ctx.obj["repo"]` not set — broken when run from outside the target repo.**
+The `analyze` command takes `repo_path` as an argument, but never sets `ctx.obj["repo"]` to match. At CLI group level (line 251-255), `ctx.obj["repo"]` resolves to cwd when no `--repo` flag is passed and no config exists yet (which is the case for a fresh `analyze` run). All subsequent `ctx.invoke` calls to `scan`, `explore`, etc. use `_get_repo(ctx)` (line 81-83) which reads `ctx.obj["repo"]`, so they'll operate on cwd instead of the target repo.
+
+Typical use case (`cd repo && code-expert analyze .`) works because cwd == repo_path. But the documented example `code-expert analyze ~/git/my-project` from a different directory will silently use the wrong paths for scanning, exploration, queue reads, etc.
+
+Fix: add `ctx.obj["repo"] = os.path.abspath(repo_path)` near the top of `analyze`, before any `ctx.invoke` calls. The `update` command doesn't need this because it doesn't take a `repo_path` argument and relies on pre-existing config.
+
+**2. `limit=0` ("unlimited") caps at point-in-time queue size.**
+Line `explore_limit = limit if limit > 0 else pending_count(project_dir)` snapshots the queue count after `scan`. But `explore` itself can enqueue new sub-topics during exploration (via `_finalize_topic` → `_enqueue_topics`). So "unlimited" actually means "up to however many topics existed when we started exploring", which is smaller than the true exhaustive count. This is minor and may be intentional, but the docstring says `--limit 0  # no cap` which overpromises.
+
+**3. Duplicate `project_dir` resolution.**
+`project_dir = _get_project_dir(ctx)` appears at line 4322 (for `explore_limit`) and the variable is reused at line 4420 (checkpoint save). The first call assigns `project_dir`, but if the bug from item 1 is fixed, the value will be consistent. Not a bug, just noting it.
+
+**4. No test coverage.**
+The observation confirms `test_count: 0`. A pipeline command that orchestrates 8+ steps is high-value for at least a smoke test (e.g., mocking the sub-commands and verifying invocation order and error-continue behavior).
+
+**5. Good patterns carried over from `update`.**
+The error-collection-and-continue pattern, `SystemExit` handling, pre/post belief snapshot, checkpoint persistence, and final report are all consistent with the existing `update` command (lines 4099-4259). The structure is clearly modeled on it, which is the right approach.
+
+**6. Minor: `generate_summary` step 8 missing WARN echo.**
+At step 8 (line 4393-4398), when `generate-summary` fails with `SystemExit`, the error is appended but no `click.echo(f"WARN: ...")` is printed. This mirrors `update`'s pattern at line 4211-4212, so it's intentionally silent there, but inconsistent with steps 1-7 which all echo warnings.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not inspect `_explore_loop` to verify behavior when `loop_max=0`. Could not verify where `topics.json` / queue files are written relative to `project_dir` to fully confirm the cwd-vs-repo_path impact. No test files to cross-reference against.
+
+---
+
+### FEATURE_REQUESTS
+- Include the full body of helper functions referenced in the diff (like `_explore_loop`) to verify edge-case behavior in orchestration commands
+- Show the `update` command body alongside `analyze` when both exist in the same file, since `analyze` is clearly modeled on it — makes it easy to spot intentional vs accidental divergence

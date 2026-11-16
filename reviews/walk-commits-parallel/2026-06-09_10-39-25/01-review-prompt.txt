@@ -1,0 +1,436 @@
+You are a senior code reviewer. Review the following code changes.
+
+## Specification
+
+No specification provided. Focus on correctness, tests, and integration.
+
+
+
+
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 4dfa992..7a632b5 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -1323,51 +1323,71 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
+         return
+ 
+     # Retract beliefs sourced from deleted files
+     if deleted_files:
+         _retract_beliefs_for_deleted_files(deleted_files)
+ 
+     if not check_model_available(model):
+         click.echo(f"Error: Model '{model}' CLI not available", err=True)
+         sys.exit(1)
+ 
+-    # Explore each unique file
+-    explored = 0
+-    skipped = 0
++    # Build topics for each unique file
+     from .topics import Topic
++    timeout = ctx.obj["timeout"]
++    parallel = ctx.obj["parallel"]
++    topics_with_commits = []
++    skipped = 0
+     for file_path, commit in file_to_commit.items():
+-        explored += 1
+-        click.echo(f"\n{'=' * 40}", err=True)
+-        click.echo(
+-            f"[{explored}/{total_files}] {file_path} (from {commit['sha'][:8]})",
+-            err=True,
+-        )
+-        click.echo(f"{'=' * 40}", err=True)
++        abs_path = os.path.join(abs_repo, file_path)
++        if not os.path.isfile(abs_path):
++            click.echo(f"  File not found (deleted?): {file_path}, skipping", err=True)
++            skipped += 1
++            continue
+ 
+         topic = Topic(
+             title=f"{commit['subject']} — {file_path}",
+             kind="file",
+             target=file_path,
+             source=f"walk-commits:{commit['sha'][:8]}",
+         )
++        topics_with_commits.append((topic, commit))
+ 
+-        abs_path = os.path.join(abs_repo, file_path)
+-        if not os.path.isfile(abs_path):
+-            click.echo(f"  File not found (deleted?): {file_path}, skipping", err=True)
+-            skipped += 1
+-            continue
++    # Explore in batches
++    explored = 0
++    all_topics = [t for t, _ in topics_with_commits]
++    while explored < len(all_topics):
++        batch = all_topics[explored:explored + parallel]
++        click.echo(f"\n{'=' * 40}", err=True)
++        click.echo(f"[{explored + 1}-{explored + len(batch)}/{len(all_topics)}]", err=True)
++        click.echo(f"{'=' * 40}", err=True)
++        for topic in batch:
++            click.echo(f"  [{topic.kind}] {topic.target}", err=True)
+ 
+-        _run_file_topic(ctx, topic, model, abs_repo)
++        if parallel > 1 and len(batch) > 1:
++            results = asyncio.run(
++                _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)
++            )
++            for r in results:
++                if isinstance(r, Exception):
++                    click.echo(f"  Error: {r}", err=True)
++                elif r is not None:
++                    _, result, entry_name, entry_title, source = r
++                    _finalize_topic(ctx, entry_name, entry_title, source, result)
++        else:
++            for topic in batch:
++                _run_file_topic(ctx, topic, model, abs_repo)
++
++        explored += len(batch)
+ 
+     # Save checkpoint so --since-last works next time
+     save_diff_checkpoint(project_dir, cwd=abs_repo)
+-    click.echo(f"\nWalked {len(commits)} commit(s), explored {explored - skipped} file(s) ({skipped} skipped)", err=True)
++    click.echo(f"\nWalked {len(commits)} commit(s), explored {len(all_topics)} file(s) ({skipped} skipped)", err=True)
+     click.echo("Diff checkpoint saved.", err=True)
+ 
+ 
+ # --- propose-beliefs ---
+ 
+ 
+ @cli.command("propose-beliefs")
+ @click.option("--batch-size", type=int, default=5, help="Entries per LLM batch (default: 5)")
+ @click.option("--output", default="proposed-beliefs.md", help="Output file")
+ @click.option("--model", "-m", default=None, help="Override model")
+
+```
+
+## Observation Results
+
+You previously requested observations. Here are the results:
+
+```json
+{
+  "explore_topics_concurrent_body": {
+    "function": "_explore_topics_concurrent",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1136,
+    "end_line": 1164,
+    "source": "async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent):\n    \"\"\"Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception.\"\"\"\n    sem = asyncio.Semaphore(max_concurrent)\n\n    async def _do_topic(topic):\n        async with sem:\n            click.echo(f\"Explaining [{topic.kind}] {topic.target} with {model}...\", err=True)\n            if topic.kind == \"general\":\n                result, entry_name, entry_title, source = await _run_general_topic_async(\n                    topic, model, repo_path, timeout,\n                )\n                return topic, result, entry_name, entry_title, source\n\n            prepare_fn = _PREPARE_DISPATCH.get(topic.kind)\n            if not prepare_fn:\n                raise ValueError(f\"Unknown topic kind: {topic.kind}\")\n\n            prepared = prepare_fn(topic, repo_path)\n            if prepared is None:\n                return None\n\n            prompt, entry_name, entry_title, source = prepared\n            result = await invoke(prompt, model, timeout=timeout)\n            return topic, result, entry_name, entry_title, source\n\n    return await asyncio.gather(\n        *[_do_topic(t) for t in topics],\n        return_exceptions=True,\n    )"
+  },
+  "finalize_topic_body": {
+    "function": "_finalize_topic",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 996,
+    "end_line": 1001,
+    "source": "def _finalize_topic(ctx, entry_name, entry_title, source, result):\n    \"\"\"Write entry, enqueue new topics, and report beliefs from a completed exploration.\"\"\"\n    _create_entry(entry_name, entry_title, result)\n    _enqueue_topics(result, source=source, project_dir=_get_project_dir(ctx))\n    _report_beliefs(result)\n    _emit(ctx, result)"
+  },
+  "run_file_topic_body": {
+    "function": "_run_file_topic",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1012,
+    "end_line": 1024,
+    "source": "def _run_file_topic(ctx, topic, model, repo_path):\n    \"\"\"Handle a file exploration topic.\"\"\"\n    prepared = _prepare_file_topic(topic, repo_path)\n    if prepared is None:\n        return\n    prompt, entry_name, entry_title, source = prepared\n    click.echo(f\"Explaining {topic.target} with {model}...\", err=True)\n    try:\n        result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))\n    except Exception as e:\n        click.echo(f\"Error: {e}\", err=True)\n        sys.exit(1)\n    _finalize_topic(ctx, entry_name, entry_title, source, result)"
+  },
+  "walk_commits_full": {
+    "function": "walk_commits",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1236,
+    "end_line": 1384,
+    "source": "@cli.command(\"walk-commits\")\n@click.option(\"--since\", default=None, help=\"Walk commits since date (e.g., 2026-03-01, '1 week ago')\")\n@click.option(\"--since-commit\", default=None, help=\"Walk commits since a specific commit SHA\")\n@click.option(\"--since-last\", is_flag=True, default=False,\n              help=\"Walk commits since last diff checkpoint\")\n@click.option(\"--dry-run\", is_flag=True, default=False,\n              help=\"List commits and files without exploring\")\n@click.pass_context\ndef walk_commits(ctx, since, since_commit, since_last, dry_run):\n    \"\"\"Walk commits since a date/commit and explore each changed file.\n\n    For each commit, reads every changed file and runs file exploration,\n    creating one entry per file with commit context.\n\n    Example:\n        code-expert walk-commits --since 2026-03-01\n        code-expert walk-commits --since-commit abc1234\n        code-expert walk-commits --since-last\n        code-expert walk-commits --since \"1 week ago\" --dry-run\n    \"\"\"\n    from .caffeinate import hold as _caffeinate\n    _caffeinate()\n\n    repo_path = _get_repo(ctx)\n    abs_repo = os.path.abspath(repo_path)\n    project_dir = _get_project_dir(ctx)\n    model = ctx.obj[\"model\"]\n\n    # Resolve the starting point\n    if since_last:\n        checkpoint = load_diff_checkpoint(project_dir)\n        if not checkpoint:\n            click.echo(\"No previous diff checkpoint found. Use --since DATE first.\", err=True)\n            sys.exit(1)\n        since_commit = checkpoint[\"head\"]\n        click.echo(f\"Walking from checkpoint {since_commit[:8]}\", err=True)\n    elif not since and not since_commit:\n        click.echo(\"Error: provide --since DATE, --since-commit SHA, or --since-last\", err=True)\n        sys.exit(1)\n\n    # Get commits with their changed files\n    try:\n        commits = list_commits_with_files(\n            since=since, since_commit=since_commit, cwd=abs_repo,\n        )\n    except RuntimeError as e:\n        click.echo(f\"Error: {e}\", err=True)\n        sys.exit(1)\n\n    if not commits:\n        click.echo(\"No commits found.\", err=True)\n        sys.exit(0)\n\n    # Deduplicate files across commits \u2014 only explore each file once,\n    # using the latest commit that touched it\n    file_to_commit: dict[str, dict] = {}\n    deleted_files: set[str] = set()\n    for commit in commits:\n        for f in commit[\"files\"]:\n            file_to_commit[f] = commit\n        for f in commit.get(\"deleted_files\", []):\n            deleted_files.add(f)\n    # If a file was deleted then re-added across commits, it's not deleted\n    for f in list(deleted_files):\n        abs_path = os.path.join(abs_repo, f)\n        if os.path.isfile(abs_path):\n            deleted_files.discard(f)\n\n    total_files = len(file_to_commit)\n    click.echo(\n        f\"Found {len(commits)} commit(s), {total_files} unique file(s) to explore\",\n        err=True,\n    )\n    if deleted_files:\n        click.echo(f\"  {len(deleted_files)} file(s) deleted\", err=True)\n\n    if dry_run:\n        for commit in commits:\n            click.echo(f\"\\n  {commit['sha'][:8]} {commit['subject']}\")\n            for f in commit[\"files\"]:\n                marker = \" \" if file_to_commit[f] is commit else \" (earlier version, skip)\"\n                if f in deleted_files:\n                    marker = \" [DELETED]\"\n                click.echo(f\"    {marker} {f}\")\n        click.echo(f\"\\nWould explore {total_files} file(s)\")\n        if deleted_files:\n            click.echo(f\"Would retract beliefs sourced from {len(deleted_files)} deleted file(s)\")\n        return\n\n    # Retract beliefs sourced from deleted files\n    if deleted_files:\n        _retract_beliefs_for_deleted_files(deleted_files)\n\n    if not check_model_available(model):\n        click.echo(f\"Error: Model '{model}' CLI not available\", err=True)\n        sys.exit(1)\n\n    # Build topics for each unique file\n    from .topics import Topic\n    timeout = ctx.obj[\"timeout\"]\n    parallel = ctx.obj[\"parallel\"]\n    topics_with_commits = []\n    skipped = 0\n    for file_path, commit in file_to_commit.items():\n        abs_path = os.path.join(abs_repo, file_path)\n        if not os.path.isfile(abs_path):\n            click.echo(f\"  File not found (deleted?): {file_path}, skipping\", err=True)\n            skipped += 1\n            continue\n\n        topic = Topic(\n            title=f\"{commit['subject']} \u2014 {file_path}\",\n            kind=\"file\",\n            target=file_path,\n            source=f\"walk-commits:{commit['sha'][:8]}\",\n        )\n        topics_with_commits.append((topic, commit))\n\n    # Explore in batches\n    explored = 0\n    all_topics = [t for t, _ in topics_with_commits]\n    while explored < len(all_topics):\n        batch = all_topics[explored:explored + parallel]\n        click.echo(f\"\\n{'=' * 40}\", err=True)\n        click.echo(f\"[{explored + 1}-{explored + len(batch)}/{len(all_topics)}]\", err=True)\n        click.echo(f\"{'=' * 40}\", err=True)\n        for topic in batch:\n            click.echo(f\"  [{topic.kind}] {topic.target}\", err=True)\n\n        if parallel > 1 and len(batch) > 1:\n            results = asyncio.run(\n                _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)\n            )\n            for r in results:\n                if isinstance(r, Exception):\n                    click.echo(f\"  Error: {r}\", err=True)\n                elif r is not None:\n                    _, result, entry_name, entry_title, source = r\n                    _finalize_topic(ctx, entry_name, entry_title, source, result)\n        else:\n            for topic in batch:\n                _run_file_topic(ctx, topic, model, abs_repo)\n\n        explored += len(batch)\n\n    # Save checkpoint so --since-last works next time\n    save_diff_checkpoint(project_dir, cwd=abs_repo)\n    click.echo(f\"\\nWalked {len(commits)} commit(s), explored {len(all_topics)} file(s) ({skipped} skipped)\", err=True)\n    click.echo(\"Diff checkpoint saved.\", err=True)"
+  },
+  "cli_imports": {
+    "file": "ftl_code_expert/cli.py",
+    "imports": [
+      "asyncio",
+      "json",
+      "os",
+      "re",
+      "shutil",
+      "subprocess",
+      "sys",
+      "click"
+    ],
+    "from_imports": [
+      {
+        "module": "datetime",
+        "names": [
+          "date",
+          "datetime"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "git_utils",
+        "names": [
+          "commits_since_checkpoint",
+          "extract_symbol",
+          "find_related_tests",
+          "get_commit_log",
+          "get_diff",
+          "get_diff_since",
+          "get_diff_since_commit",
+          "get_file_content",
+          "get_imports",
+          "get_repo_structure",
+          "list_commits_with_files",
+          "load_diff_checkpoint",
+          "save_diff_checkpoint"
+        ]
+      },
+      {
+        "module": "llm",
+        "names": [
+          "check_model_available",
+          "invoke",
+          "invoke_concurrent",
+          "invoke_concurrent_sync",
+          "invoke_sync"
+        ]
+      },
+      {
+        "module": "observations",
+        "names": [
+          "parse_observation_requests",
+          "run_observations"
+        ]
+      },
+      {
+        "module": "prompts",
+        "names": [
+          "PROPOSE_BELIEFS_CODE",
+          "REVIEW_PROMPT",
+          "build_diff_prompt",
+          "build_diff_summary_prompt",
+          "build_file_prompt",
+          "build_function_prompt",
+          "build_observe_prompt",
+          "build_repo_prompt",
+          "build_scan_prompt"
+        ]
+      },
+      {
+        "module": "topics",
+        "names": [
+          "add_topics",
+          "load_queue",
+          "parse_topics_from_response",
+          "pending_count",
+          "pop_at",
+          "pop_batch",
+          "pop_multiple",
+          "pop_next",
+          "skip_topic"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"Command-line interface for code expert.\"\"\"\n\nimport asyncio\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nfrom datetime import date, datetime\nfrom pathlib import Path\n\nimport click\n\nfrom .git_utils import (\n    commits_since_checkpoint,\n    extract_symbol,\n    find_related_tests,\n    get_commit_log,\n    get_diff,\n    get_diff_since,\n    get_diff_since_commit,\n    get_file_content,\n    get_imports,\n    get_repo_structure,\n    list_commits_with_files,\n    load_diff_checkpoint,\n    save_diff_checkpoint,\n)\nfrom .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync\nfrom .observations import parse_observation_requests, run_observations\nfrom .prompts import (\n    PROPOSE_BELIEFS_CODE,\n    REVIEW_PROMPT,\n    build_diff_prompt,\n    build_diff_summary_prompt,\n    build_file_prompt,\n    build_function_prompt,\n    build_observe_prompt,\n    build_repo_prompt,\n    build_scan_prompt,\n)\nfrom .topics import (\n    add_topics,\n    load_queue,\n    parse_topics_from_response,\n    pending_count,\n    pop_at,\n    pop_batch,\n    pop_multiple,\n    pop_next,\n    skip_topic,\n)\n\nPROJECT_DIR = \".code-expert\"\n\n\n# --- Config helpers ---\n\n\ndef _load_config() -> dict | None:\n    \"\"\"Load .code-expert/config.json if it exists.\"\"\""
+  },
+  "explore_concurrent_exceptions": {
+    "function": "_explore_topics_concurrent",
+    "file": "ftl_code_expert/cli.py",
+    "explicit_raises": [
+      "ValueError"
+    ],
+    "calls": [
+      "ValueError",
+      "echo",
+      "prepare_fn",
+      "Semaphore",
+      "gather",
+      "_run_general_topic_async",
+      "_do_topic",
+      "get",
+      "invoke"
+    ]
+  },
+  "finalize_topic_callers": {
+    "symbol": "_finalize_topic",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 780,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "explore",
+        "context_snippet": "   777:                 click.echo(f\"  Error: {r}\", err=True)\n   778:             elif r is not None:\n   779:                 _, result, entry_name, entry_title, source = r\n>> 780:                 _finalize_topic(ctx, entry_name, entry_title, source, result)\n   781:     else:\n   782:         for seq, (idx, topic) in enumerate(valid_topics):\n   783:             if len(valid_topics) > 1:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 854,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_explore_loop",
+        "context_snippet": "   851:                     click.echo(f\"  Error: {r}\", err=True)\n   852:                 elif r is not None:\n   853:                     _, result, entry_name, entry_title, source = r\n>> 854:                     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   855:         else:\n   856:             topic = batch[0]\n   857:             if topic.kind == \"file\":"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 996,
+        "text": "def _finalize_topic(ctx, entry_name, entry_title, source, result):",
+        "context_function": "_prepare_diff_topic",
+        "context_snippet": "   993:     return prompt, f\"diff-{safe_label}\", f\"Diff: {topic.target}\", f\"diff:{topic.target}\"\n   994: \n   995: \n>> 996: def _finalize_topic(ctx, entry_name, entry_title, source, result):\n   997:     \"\"\"Write entry, enqueue new topics, and report beliefs from a completed exploration.\"\"\"\n   998:     _create_entry(entry_name, entry_title, result)\n   999:     _enqueue_topics(result, source=source, project_dir=_get_project_dir(ctx))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1024,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_run_file_topic",
+        "context_snippet": "   1021:     except Exception as e:\n   1022:         click.echo(f\"Error: {e}\", err=True)\n   1023:         sys.exit(1)\n>> 1024:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1025: \n   1026: \n   1027: def _run_function_topic(ctx, topic, model, repo_path):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1039,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_run_function_topic",
+        "context_snippet": "   1036:     except Exception as e:\n   1037:         click.echo(f\"Error: {e}\", err=True)\n   1038:         sys.exit(1)\n>> 1039:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1040: \n   1041: \n   1042: def _run_repo_topic(ctx, topic, model, repo_path):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1054,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_run_repo_topic",
+        "context_snippet": "   1051:     except Exception as e:\n   1052:         click.echo(f\"Error: {e}\", err=True)\n   1053:         sys.exit(1)\n>> 1054:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1055: \n   1056: \n   1057: def _run_diff_topic(ctx, topic, model, repo_path):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1069,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_run_diff_topic",
+        "context_snippet": "   1066:     except Exception as e:\n   1067:         click.echo(f\"Error: {e}\", err=True)\n   1068:         sys.exit(1)\n>> 1069:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1070: \n   1071: \n   1072: async def _run_general_topic_async(topic, model, repo_path, timeout):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1133,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "_run_general_topic",
+        "context_snippet": "   1130:     except Exception as e:\n   1131:         click.echo(f\"Error: {e}\", err=True)\n   1132:         sys.exit(1)\n>> 1133:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1134: \n   1135: \n   1136: async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1374,
+        "text": "_finalize_topic(ctx, entry_name, entry_title, source, result)",
+        "context_function": "walk_commits",
+        "context_snippet": "   1371:                     click.echo(f\"  Error: {r}\", err=True)\n   1372:                 elif r is not None:\n   1373:                     _, result, entry_name, entry_title, source = r\n>> 1374:                     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1375:         else:\n   1376:             for topic in batch:\n   1377:                 _run_file_topic(ctx, topic, model, abs_repo)"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 9,
+    "test_count": 0,
+    "total_count": 9
+  },
+  "topic_class_body": {
+    "error": "No function found at '__init__'",
+    "file": "ftl_code_expert/topics.py"
+  },
+  "walk_commits_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  }
+}
+```
+
+Use these results to inform your review. Do not request the same observations again.
+
+
+## Instructions
+
+For each significant change (new file, modified function, etc.), provide a structured verdict.
+
+Use this exact format for each change:
+
+### <file_path or file_path:function_name>
+VERDICT: PASS | CONCERN | BLOCK
+CORRECTNESS: VALID | QUESTIONABLE | BROKEN
+SPEC_COMPLIANCE: MEETS | PARTIAL | VIOLATES | N/A
+ISSUE_COMPLIANCE: ADDRESSES | PARTIAL | UNRELATED | N/A
+BELIEF_COMPLIANCE: CONSISTENT | VIOLATES | N/A
+TEST_COVERAGE: COVERED | PARTIAL | UNTESTED
+INTEGRATION: WIRED | PARTIAL | MISSING
+REASONING: <brief explanation of your assessment>
+---
+
+## Review Criteria
+
+1. **CORRECTNESS**: Does the code do what it claims? Is the logic sound?
+   - VALID: Logic is correct, no bugs apparent
+   - QUESTIONABLE: Logic may have edge cases or unclear behavior
+   - BROKEN: Clear bugs or incorrect behavior
+
+2. **SPEC_COMPLIANCE**: Does it meet MUST requirements from the spec?
+   - MEETS: All relevant spec requirements satisfied
+   - PARTIAL: Some requirements met, others missing or incomplete
+   - VIOLATES: Contradicts spec requirements
+   - N/A: No spec provided or not applicable
+
+3. **ISSUE_COMPLIANCE** (only when an issue is provided): Do the changes address the problem or feature described in the issue?
+   - ADDRESSES: Changes directly solve the issue's stated problem or implement the requested feature
+   - PARTIAL: Changes partially address the issue but leave some aspects unresolved
+   - UNRELATED: Changes do not appear related to the issue
+   - N/A: No issue provided
+
+4. **TEST_COVERAGE**: Are there tests for the new/changed code?
+   - COVERED: Tests exist and cover the changes
+   - PARTIAL: Some tests exist but coverage is incomplete
+   - UNTESTED: No tests for the changes
+
+5. **INTEGRATION**: Are callers updated? Is the feature usable end-to-end?
+   - WIRED: Feature is fully integrated and usable
+   - PARTIAL: Interface exists but callers not updated, or integration incomplete
+   - MISSING: No integration with existing code
+
+6. **BELIEF_COMPLIANCE** (only when beliefs are provided): Do the changes respect known architectural invariants, contracts, and rules?
+   - CONSISTENT: Changes align with or reinforce known beliefs
+   - VIOLATES: Changes contradict a specific belief — cite the belief ID
+   - N/A: No beliefs provided or no relevant beliefs apply
+
+## Verdict Guidelines
+
+- **BLOCK**: Security issues, broken functionality, spec violations, or missing critical integration
+- **CONCERN**: Missing tests, partial integration, questionable patterns, or unclear logic
+- **PASS**: Correct, tested, well-integrated code
+
+## Important
+
+- Full function bodies for modified functions may be available in the observations section — use them to verify the complete logic, not just the diff hunks
+- Related test files (prefixed with ``related_test:``) may be included in observations — check whether existing test assertions still match modified return types, signatures, or behavior. Flag any test that would break due to the changes
+- If duplicate test coverage is detected (multiple test files covering the same source), note it in your review
+- Focus on actual issues, not style preferences
+- If a method signature is added but callers aren't updated, that's PARTIAL integration
+- Be specific in reasoning - reference line numbers or function names
+- When in doubt, use CONCERN rather than PASS
+
+## Self-Review
+
+After completing your review, add a brief self-assessment:
+
+### SELF_REVIEW
+LIMITATIONS: <what context were you missing that affected review quality?>
+---
+
+Examples of limitations:
+- "Could not see full class to verify no other methods access the modified field"
+- "Test file not included in diff - cannot verify coverage claims"
+- "Spec file referenced but not provided"
+
+
+## Feature Requests
+
+If this review tool could be improved to help you do a better job, suggest features:
+
+### FEATURE_REQUESTS
+- <suggestion 1>
+- <suggestion 2>
+---
+
+Examples:
+- "Include full file context for modified functions, not just diff hunks"
+- "Show callers of modified methods to verify integration"
+- "Include test file alongside implementation changes"
+
+Only include this section if you have specific suggestions. Skip if none.

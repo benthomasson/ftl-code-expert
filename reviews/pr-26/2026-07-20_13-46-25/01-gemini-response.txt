@@ -1,0 +1,43 @@
+### ftl_code_expert/cli.py:_ensure_labels
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The GitHub implementation (`gh label list --repo repo_slug --json name -q .[].name`) correctly retrieves a clean list of label names. However, the GitLab implementation (`glab label list --repo repo_slug`) returns human-readable tables/headers containing metadata (e.g. `Showing X of Y labels` and colors/descriptions on each line). Thus, checking exact match via `required - existing` on line-by-line output will fail, causing the command to attempt to recreate existing labels on every invocation of `file_issues`. Also, subprocess exceptions and failure codes for label creation are swallowed silently.
+---
+
+### ftl_code_expert/cli.py:file_issues
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The label check and creation integration is correctly positioned after verifying remaining candidates and before executing the main loop. It correctly guards label auto-creation to only execute when `--dry-run` is omitted and there are active issues to file, which avoids redundant CLI overhead. However, the functionality is ultimately dependent on the flawed `_ensure_labels` for GitLab.
+---
+
+### ftl_code_expert/data/CLAUDE.md.template
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: MEETS
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: The documentation additions are highly clear, precise, and consistent with the project's features and workflows. It lists standard verification commands and provides concrete instructions on querying the reasons database before analyzing or modifying code.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Did not have a local environment with `glab` or `gh` CLI installed to execute the raw commands and verify exact output formats dynamically.
+- No automated test files were provided or exist in the workspace directory structure, making it impossible to check for regression tests or run verification suites.
+---
+
+### FEATURE_REQUESTS
+- Include CLI mock fixtures or sandbox integrations for tool dependencies (e.g. `gh` and `glab`) to allow validation of subprocess commands in unit tests.
+- Show related tests or a basic testing suite outline in the workspace context to facilitate writing and reviewing test coverage.
+---

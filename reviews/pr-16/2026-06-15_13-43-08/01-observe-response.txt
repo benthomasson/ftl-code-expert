@@ -1,0 +1,14 @@
+```json
+[
+  {"name": "verify_belief_with_observations_deps", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_extract_source_file"}},
+  {"name": "gather_confirmation_context_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_gather_confirmation_context"}},
+  {"name": "run_observations_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "run_observations"}},
+  {"name": "parse_observation_requests_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "parse_observation_requests"}},
+  {"name": "read_file_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "read_file"}},
+  {"name": "invoke_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/llm.py", "function_name": "invoke"}},
+  {"name": "has_reasons_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_has_reasons"}},
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "get_repo_structure_sig", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "get_repo_structure"}},
+  {"name": "verify_callers", "tool": "find_callers", "params": {"symbol": "_gather_confirmation_context"}},
+  {"name": "reasons_export_callers", "tool": "find_callers", "params": {"symbol": "_reasons_export"}}
+]

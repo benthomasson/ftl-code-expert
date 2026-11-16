@@ -1,0 +1,49 @@
+### README.md
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: The documentation correctly adds the new `--parallel` / `-j` flag and its default value (3) to the global options table.
+---
+
+### ftl_code_expert/llm.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Implementation of `invoke_concurrent` and its synchronous wrapper uses `asyncio.Semaphore` to correctly bound parallelism. The use of `return_exceptions=True` in `asyncio.gather` is a good practice here, allowing the caller to handle individual failures without failing the entire batch.
+---
+
+### ftl_code_expert/topics.py:pop_batch
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: `pop_batch` correctly extends the existing queue management logic to handle multiple topics. It follows the existing pattern of marking topics as "done" in the queue before returning them.
+---
+
+### ftl_code_expert/cli.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The refactoring of topic execution into `_prepare`, `_run`, and `_finalize` stages is well-executed. This separation allows the same logic to be used for both serial and concurrent execution. The `explore` command and `_explore_loop` now correctly leverage `asyncio` for parallel processing when requested. The `propose-beliefs` and `review-proposals` commands also benefit from the new parallel `invoke` capabilities, which should significantly improve performance for large codebases.
+
+One observation: Topics are marked as "done" in the queue as soon as they are popped. If the process crashes during a parallel run, all topics in that batch will be lost (marked done but not documented). This is consistent with the existing serial behavior but affects more topics at once when running in parallel.
+---
+
+### SELF_REVIEW
+LIMITATIONS: I could not verify the thread-safety of `run_observations` as `ftl_code_expert/observations.py` was not provided. However, since observations are typically read-only operations on the filesystem, concurrent execution is likely safe. No test files were included in the diff, so I cannot verify if the new concurrency logic is covered by automated tests.
+---

@@ -1,0 +1,221 @@
+You are a senior code reviewer preparing to review code changes.
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 4dfa992..7a632b5 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -1323,51 +1323,71 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
+         return
+ 
+     # Retract beliefs sourced from deleted files
+     if deleted_files:
+         _retract_beliefs_for_deleted_files(deleted_files)
+ 
+     if not check_model_available(model):
+         click.echo(f"Error: Model '{model}' CLI not available", err=True)
+         sys.exit(1)
+ 
+-    # Explore each unique file
+-    explored = 0
+-    skipped = 0
++    # Build topics for each unique file
+     from .topics import Topic
++    timeout = ctx.obj["timeout"]
++    parallel = ctx.obj["parallel"]
++    topics_with_commits = []
++    skipped = 0
+     for file_path, commit in file_to_commit.items():
+-        explored += 1
+-        click.echo(f"\n{'=' * 40}", err=True)
+-        click.echo(
+-            f"[{explored}/{total_files}] {file_path} (from {commit['sha'][:8]})",
+-            err=True,
+-        )
+-        click.echo(f"{'=' * 40}", err=True)
++        abs_path = os.path.join(abs_repo, file_path)
++        if not os.path.isfile(abs_path):
++            click.echo(f"  File not found (deleted?): {file_path}, skipping", err=True)
++            skipped += 1
++            continue
+ 
+         topic = Topic(
+             title=f"{commit['subject']} — {file_path}",
+             kind="file",
+             target=file_path,
+             source=f"walk-commits:{commit['sha'][:8]}",
+         )
++        topics_with_commits.append((topic, commit))
+ 
+-        abs_path = os.path.join(abs_repo, file_path)
+-        if not os.path.isfile(abs_path):
+-            click.echo(f"  File not found (deleted?): {file_path}, skipping", err=True)
+-            skipped += 1
+-            continue
++    # Explore in batches
++    explored = 0
++    all_topics = [t for t, _ in topics_with_commits]
++    while explored < len(all_topics):
++        batch = all_topics[explored:explored + parallel]
++        click.echo(f"\n{'=' * 40}", err=True)
++        click.echo(f"[{explored + 1}-{explored + len(batch)}/{len(all_topics)}]", err=True)
++        click.echo(f"{'=' * 40}", err=True)
++        for topic in batch:
++            click.echo(f"  [{topic.kind}] {topic.target}", err=True)
+ 
+-        _run_file_topic(ctx, topic, model, abs_repo)
++        if parallel > 1 and len(batch) > 1:
++            results = asyncio.run(
++                _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)
++            )
++            for r in results:
++                if isinstance(r, Exception):
++                    click.echo(f"  Error: {r}", err=True)
++                elif r is not None:
++                    _, result, entry_name, entry_title, source = r
++                    _finalize_topic(ctx, entry_name, entry_title, source, result)
++        else:
++            for topic in batch:
++                _run_file_topic(ctx, topic, model, abs_repo)
++
++        explored += len(batch)
+ 
+     # Save checkpoint so --since-last works next time
+     save_diff_checkpoint(project_dir, cwd=abs_repo)
+-    click.echo(f"\nWalked {len(commits)} commit(s), explored {explored - skipped} file(s) ({skipped} skipped)", err=True)
++    click.echo(f"\nWalked {len(commits)} commit(s), explored {len(all_topics)} file(s) ({skipped} skipped)", err=True)
+     click.echo("Diff checkpoint saved.", err=True)
+ 
+ 
+ # --- propose-beliefs ---
+ 
+ 
+ @cli.command("propose-beliefs")
+ @click.option("--batch-size", type=int, default=5, help="Entries per LLM batch (default: 5)")
+ @click.option("--output", default="proposed-beliefs.md", help="Output file")
+ @click.option("--model", "-m", default=None, help="Override model")
+
+```
+
+## Your Task
+
+Analyze the diff and identify what additional information you need to render confident verdicts.
+Do NOT render verdicts yet. Only request observations.
+
+## Available Observation Tools
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `exception_hierarchy` | Show exception MRO and subclasses | Retry logic, exception handling |
+| `raises_analysis` | What exceptions a function raises | New function calls, error paths |
+| `call_graph` | What a function calls | Impact analysis |
+| `find_usages` | Where a symbol is used (with prod/test split) | Quick integration lookup |
+| `find_callers` | Caller analysis with prod/test split and calling context | Method signature changes, return type changes, constructor modifications, integration verification |
+| `test_coverage` | Find tests for a file (uses coverage-map if available) | Test coverage claims |
+| `coverage_map_tests` | Find tests covering a file (from coverage-map.json) | Precise test coverage from actual execution |
+| `coverage_map_files` | Find files covered by tests matching a pattern | Impact analysis for test changes |
+| `function_body` | Full source of a function/method | Need complete function context beyond diff hunks |
+| `file_imports` | Extract imports from a file | Verify import changes, check dependencies |
+| `project_dependencies` | Get pyproject.toml/requirements.txt | Verify new imports have dependencies |
+| `related_test_files` | Find test files for a source file | Discover tests by naming, imports, and coverage map |
+| `class_hierarchy` | Show base classes and their `__init__` signatures | Class changes its parent, modifies `__init__`, or uses `super()` |
+| `symbol_migration` | Check if a rename is complete across the repo | Symbol renamed in diff — verify old name is fully removed |
+| `generator_info` | Report whether a function uses `yield` | Function might be a generator — affects return value semantics |
+
+## What to Look For
+
+1. **Exception handling**: Any `retry_if_exception_type`, `except`, or exception class references
+2. **New dependencies**: Calls to external libraries where you don't know the error behavior
+3. **Behavioral changes**: Modified logic where you need to verify callers/callees
+4. **Test claims**: References to tests you can't see in the diff
+5. **Inheritance changes**: Class definition changes, new base classes, `super()` calls
+6. **Renames**: Symbols that appear to have been renamed in the diff
+7. **Factory methods**: Calls to `@classmethod` / `@staticmethod` constructors (e.g. `Result.error(...)`) — request `function_body` to see their implementation
+
+## Output Format
+
+Output a JSON array of observation requests:
+
+```json
+[
+  {"name": "descriptive_name", "tool": "tool_name", "params": {"param": "value"}},
+  ...
+]
+```
+
+If you don't need any observations (simple changes, all context is in the diff), output:
+
+```json
+[]
+```
+
+## Examples
+
+For a diff containing `retry_if_exception_type((OSError, httpx.TransportError))`:
+```json
+[
+  {"name": "oserror_subclasses", "tool": "exception_hierarchy", "params": {"class_name": "builtins.OSError"}},
+  {"name": "transport_errors", "tool": "exception_hierarchy", "params": {"class_name": "httpx.TransportError"}}
+]
+```
+
+For a diff adding a new function that calls `oauth_client.get_access_token()`:
+```json
+[
+  {"name": "oauth_exceptions", "tool": "raises_analysis", "params": {"file_path": "src/auth/oauth.py", "function_name": "get_access_token"}}
+]
+```
+
+For a diff modifying a method but you need the full function to verify:
+```json
+[
+  {"name": "full_getattr", "tool": "function_body", "params": {"file_path": "src/proxy.py", "function_name": "__getattr__"}}
+]
+```
+
+For a diff changing a method signature or return type (verify all callers):
+```json
+[
+  {"name": "handle_request_callers", "tool": "find_callers", "params": {"symbol": "handle_request"}}
+]
+```
+
+For a diff adding new imports (e.g., `import httpx`):
+```json
+[
+  {"name": "file_imports", "tool": "file_imports", "params": {"file_path": "src/client.py"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}}
+]
+```
+
+For a diff calling a factory method like `ModuleResult.error_result(msg)`:
+```json
+[
+  {"name": "error_result_body", "tool": "function_body", "params": {"file_path": "src/models.py", "function_name": "error_result"}}
+]
+```
+
+For a diff where a class changes its parent class:
+```json
+[
+  {"name": "client_hierarchy", "tool": "class_hierarchy", "params": {"class_name": "MyClient", "file_path": "src/client.py"}}
+]
+```
+
+For a diff that renames a symbol (e.g., `OldClient` to `NewClient`):
+```json
+[
+  {"name": "client_rename", "tool": "symbol_migration", "params": {"old_name": "OldClient", "new_name": "NewClient"}}
+]
+```
+
+For a diff modifying a function that might be a generator:
+```json
+[
+  {"name": "process_gen", "tool": "generator_info", "params": {"file_path": "src/pipeline.py", "function_name": "process_items"}}
+]
+```
+
+Now analyze the diff above and output your observation requests as JSON:

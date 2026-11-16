@@ -1,0 +1,56 @@
+## Code Review Report
+
+Here is the structured review of the proposed changes.
+
+---
+
+### `ftl_code_expert/git_utils.py:list_source_files`
+VERDICT: CONCERN  
+CORRECTNESS: QUESTIONABLE  
+SPEC_COMPLIANCE: MEETS  
+ISSUE_COMPLIANCE: ADDRESSES  
+BELIEF_COMPLIANCE: CONSISTENT  
+TEST_COVERAGE: UNTESTED  
+INTEGRATION: WIRED  
+REASONING: 
+1. **Windows OS Compatibility Issue**: The sorting line `files.sort(key=lambda p: (p.count(os.sep), p))` attempts to sort files by depth first (BFS). However, Git (`git ls-files`) consistently outputs forward-slash path separators (`/`) across all operating systems, including Windows. Since `os.sep` is `'\\'` on Windows, `p.count(os.sep)` will evaluate to `0` for all paths on Windows platforms, falling back to a pure lexicographical/alphabetical sort. Changing this to count forward slashes (e.g., `p.count('/')`) or using `Path(p).parts` is necessary to ensure platform-independent BFS sorting.
+2. **Missing Tests**: This utility handles shell command execution and filtering logic, but contains no unit or integration tests. A mock-based or temporary-directory-based test verifying file filtering and path depth sorting would guard against silent regressions.
+
+---
+
+### `ftl_code_expert/cli.py:scan`
+VERDICT: PASS  
+CORRECTNESS: VALID  
+SPEC_COMPLIANCE: N/A  
+ISSUE_COMPLIANCE: ADDRESSES  
+BELIEF_COMPLIANCE: CONSISTENT  
+TEST_COVERAGE: UNTESTED  
+INTEGRATION: WIRED  
+REASONING: 
+1. The implementation cleanly extracts the project directory path once and feeds all tracked source files into the topic queue as `kind="file"` topics. By adding these before parsing LLM-suggested topics, it satisfies the "breadth before depth" ordering.
+2. **Scalability/Performance Concern**: Since the topic queue is scanned with $O(N)$ complexity on each pop, enqueuing every single tracked file in a large repository (e.g., >1,000 files) without a depth limit or maximum count could degrade queue operation performance downstream.
+
+---
+
+### `ftl_code_expert/cli.py` (Topic Import Cleanup)
+VERDICT: PASS  
+CORRECTNESS: VALID  
+SPEC_COMPLIANCE: N/A  
+ISSUE_COMPLIANCE: N/A  
+BELIEF_COMPLIANCE: CONSISTENT  
+TEST_COVERAGE: UNTESTED  
+INTEGRATION: WIRED  
+REASONING: Since the `Topic` dataclass is now imported at the module level (line 48) to support the `scan` command, deleting the redundant local imports in `walk_commits` and `research` commands is correct, clean, and avoids import shadowing.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: 
+- There are no existing automated tests in the repository for `scan` or `git_utils` commands, making it impossible to check for preexisting test assertions.
+- Did not have access to an active Windows environment to empirically measure the exact behavior of `subprocess` with `git ls-files` under the Windows terminal/environment, but the forward-slash separator output is well-known standard behavior for Git commands.
+
+---
+
+### FEATURE_REQUESTS
+- **Automatic Test Runner & Verification**: Enhance the review platform to automatically identify and run local test files (if they exist) upon code modification or review, so we can verify if test coverage metric claims are correct.
+- **Cross-Platform Virtualization/Mocking**: Provide a way to run checks or simulated executions of system/shell utility functions on different target OSs (e.g., Windows vs. Linux) to catch OS-specific bugs like path separator mismatches automatically.

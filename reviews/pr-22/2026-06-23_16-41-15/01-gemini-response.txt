@@ -1,0 +1,24 @@
+### ftl_code_expert/cli.py:analyze
+VERDICT: BLOCK
+CORRECTNESS: BROKEN
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING: 
+1. **Critical Target Repository Bug (Broken Integration)**: When the CLI runs, `cli()` initializes `ctx.obj["repo"]` to `os.getcwd()` if no global `--repo` option is passed and no config exists. The new `analyze` command accepts a required `repo_path` argument, but it never updates `ctx.obj["repo"]` to this path. Consequently, while `init` writes the correct `repo_path` to config, all subsequent invoked commands (`scan`, `explore`, etc.) retrieve the repository path via `_get_repo(ctx)`, which still returns `ctx.obj["repo"]` (the original current working directory). This means if `code-expert analyze ~/git/some-project` is run from outside the target repository, the tool will scan and explore the current directory instead of the target repository.
+   * **Fix**: Add `ctx.obj["repo"] = os.path.abspath(repo_path)` at the start of the `analyze` function body to properly override and align the execution context.
+2. **Fragile Error Handling/Cascade Failures**: If critical steps like `init` or `scan` fail and exit via `sys.exit(1)`, they raise `SystemExit(1)` which is caught and logged. However, the command prints a warning and proceeds to execute the rest of the pipeline anyway. For instance, if `scan` fails (leaving the queue empty), the command will still trigger `explore`, `propose_beliefs`, etc., which leads to redundant API calls and cascade errors.
+3. **Missing File Encoding**: Writing the checkpoint file `last-analyze.json` lacks an explicit `encoding="utf-8"` parameter (line 4426), which can cause failures or corruptions on Windows platforms or systems with non-UTF-8 default locale settings.
+---
+
+### SELF_REVIEW
+LIMITATIONS: 
+- There are no automated tests (unit or integration) in this repository, making it impossible to run automated regressions or verify Click command context propagation through standard test suites.
+---
+
+### FEATURE_REQUESTS
+- Implement a standard testing framework (such as `pytest` with Click's `CliRunner`) to facilitate automated testing of subcommand workflows and context interaction.
+- Introduce mock configurations for LLM invocation components (`ftl_code_expert/llm.py`) so end-to-end integration tests can be run safely in CI.
+---

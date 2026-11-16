@@ -1,0 +1,81 @@
+### ftl_code_expert/prompts/research.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean prompt template with clear instructions and example output format. Placeholders (`belief_id`, `belief_text`, `comment`, `repo_tree`, `explored_files`) all match what the caller passes in `research()`. The "Output ONLY the JSON array" instruction pairs well with `_parse_inferred_files()` which defensively scans for the first valid JSON array.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Standard export wiring — import added and `__all__` updated. Alphabetical ordering maintained.
+---
+
+### ftl_code_expert/cli.py:_get_explored_files
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Scans first 5 lines of each entry for `# File:` headers, which matches the entry format produced by `_create_entry`. Handles missing `entries/` dir and per-file `OSError` gracefully. Returns a set for O(1) lookup.
+---
+
+### ftl_code_expert/cli.py:_parse_review_candidates
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: No error handling for malformed JSON — `json.load` will raise `JSONDecodeError` with a raw traceback rather than a user-friendly CLI error. Also, downstream code accesses `c['id']` and `c['comment']` without checking those keys exist. If a review entry lacks either key, you get a `KeyError`. Since this parses LLM-generated review output, defensive key access (`.get()` with a fallback or a filter) would be safer. Not a blocker since `click.Path(exists=True)` at least ensures the file exists, but a malformed review file gives a poor UX.
+---
+
+### ftl_code_expert/cli.py:_parse_inferred_files
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Robust LLM output parser — iterates over all regex matches for `[...]` and validates each as a JSON list of strings before returning. Falls back to empty list. Handles markdown-wrapped responses where the array might not be the only content.
+---
+
+### ftl_code_expert/cli.py:research
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command is well-structured and follows existing patterns (`explore`, `propose-beliefs`, `_explore_topics_concurrent`). Integration is solid — it correctly uses `Topic(kind="file")`, `_explore_topics_concurrent`, `_finalize_topic`, `_run_file_topic`, and `ctx.invoke(propose_beliefs, auto_accept=True)`. Two concerns:
+
+1. **No tests at all.** The observation confirms `test_count: 0`. The helper functions (`_parse_review_candidates`, `_parse_inferred_files`, `_get_explored_files`) are pure functions that are straightforward to unit test.
+
+2. **`SystemExit` catch on `e.code`**: The check `if e.code and e.code != 0` will also suppress `SystemExit(None)` and `SystemExit(0)`, which is correct intent but worth noting that `_run_file_topic` calls `sys.exit(1)` on error, so the catch in the sequential path `except (SystemExit, Exception)` correctly prevents a single file failure from aborting the whole research run.
+
+The overall pipeline logic — parse review → load network → infer files → filter explored → explore → propose+accept — is sound. The `--dry-run` escape hatch is a good design choice.
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not verify the `Topic` dataclass/namedtuple field names — the observation shows no `__init__` signature, so I'm trusting that `title`, `kind`, `target`, `source` are valid fields based on existing usage patterns in the codebase. Could not see `invoke_concurrent_sync` signature to verify the `model`/`timeout`/`max_concurrent` kwargs. Could not see what `_create_entry` expects to verify the entry format matches what `_get_explored_files` parses.
+---
+
+### FEATURE_REQUESTS
+- Include the dataclass/namedtuple definition for classes used in new code (e.g., `Topic` fields and types)
+- Show the signature of utility functions called from new code (`invoke_concurrent_sync`, `get_repo_structure`, `check_model_available`) to verify argument compatibility
+- Flag when `test_count: 0` prominently in the observation results header so it's immediately visible
+---

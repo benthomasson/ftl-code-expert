@@ -1,0 +1,170 @@
+{
+  "create_issue_body": {
+    "function": "_create_issue",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3018,
+    "end_line": 3045,
+    "source": "def _create_issue(platform: str, repo_slug: str, title: str, body: str,\n                  labels: list[str]) -> str | None:\n    \"\"\"Create an issue and return its URL, or None on failure.\"\"\"\n    if platform == \"github\":\n        cmd = [\"gh\", \"issue\", \"create\", \"--repo\", repo_slug,\n               \"--title\", title, \"--body\", body]\n        for label in labels:\n            cmd.extend([\"--label\", label])\n        result = subprocess.run(cmd, capture_output=True, text=True)\n        if result.returncode == 0:\n            return result.stdout.strip()\n        click.echo(f\"  Error creating issue: {result.stderr.strip()}\", err=True)\n        return None\n    elif platform == \"gitlab\":\n        cmd = [\"glab\", \"issue\", \"create\", \"--repo\", repo_slug,\n               \"--title\", title, \"--description\", body, \"--yes\"]\n        for label in labels:\n            cmd.extend([\"--label\", label])\n        result = subprocess.run(cmd, capture_output=True, text=True)\n        if result.returncode == 0:\n            # glab prints URL to stdout\n            url = result.stdout.strip()\n            if not url:\n                url = result.stderr.strip()\n            return url\n        click.echo(f\"  Error creating issue: {result.stderr.strip()}\", err=True)\n        return None\n    return None"
+  },
+  "file_issues_body": {
+    "function": "file_issues",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3379,
+    "end_line": 3573,
+    "source": "@cli.command(\"file-issues\")\n@click.option(\"--repo\", \"-r\", \"repo_slug\", default=None,\n              help=\"Target repo (owner/repo). Auto-detected from git remote if omitted.\")\n@click.option(\"--platform\", \"-p\", \"platform_override\", default=None,\n              type=click.Choice([\"github\", \"gitlab\"]),\n              help=\"Force platform (auto-detected if omitted)\")\n@click.option(\"--label\", \"-l\", \"labels\", multiple=True,\n              help=\"Extra labels to add (repeatable)\")\n@click.option(\"--dry-run\", is_flag=True, default=False,\n              help=\"Show what would be filed without creating issues\")\n@click.option(\"--skip-confirm\", is_flag=True, default=False,\n              help=\"Skip LLM confirmation that issues still exist in code\")\n@click.option(\"--no-negative\", is_flag=True, default=False,\n              help=\"Skip negative IN beliefs (only file gated blockers)\")\n@click.pass_context\ndef file_issues(ctx, repo_slug, platform_override, labels, dry_run, skip_confirm, no_negative):\n    \"\"\"File issues from gated blockers and negative beliefs.\n\n    Finds GATE beliefs where outlist nodes are IN (blocking the conclusion),\n    plus negative IN beliefs (bugs, gaps, risks). Before filing, confirms\n    each issue still exists in the current code using LLM verification.\n\n    Checks for existing issues to avoid duplicates.\n\n    Example:\n        code-expert file-issues              # auto-detect repo, file issues\n        code-expert file-issues --dry-run    # preview without filing\n        code-expert file-issues --skip-confirm  # skip code confirmation\n        code-expert file-issues --no-negative   # only gated blockers\n    \"\"\"\n    if not _has_reasons():\n        click.echo(\"Error: reasons CLI required. Install with: uv tool install ftl-reasons\", err=True)\n        sys.exit(1)\n\n    model = ctx.obj[\"model\"]\n    timeout = ctx.obj[\"timeout\"]\n\n    # Load network\n    network = _load_network()\n    nodes = network.get(\"nodes\", {})\n    if not nodes:\n        click.echo(\"No beliefs found. Run explorations first.\", err=True)\n        sys.exit(1)\n\n    # Build unified candidate list: [{id, text, type, gated?}]\n    candidates: list[dict] = []\n\n    # 1. Find gated blockers\n    blockers: dict[str, list[dict]] = {}\n    for nid, node in nodes.items():\n        if node.get(\"truth_value\") != \"OUT\":\n            continue\n        if node.get(\"metadata\", {}).get(\"superseded_by\"):\n            continue\n        for j in node.get(\"justifications\", []):\n            if not j.get(\"outlist\"):\n                continue\n            for outlist_id in j[\"outlist\"]:\n                if outlist_id not in nodes:\n                    continue\n                if nodes[outlist_id].get(\"truth_value\") != \"IN\":\n                    continue\n                blockers.setdefault(outlist_id, []).append({\n                    \"id\": nid,\n                    \"text\": node.get(\"text\", \"\"),\n                })\n\n    for bid, gated in blockers.items():\n        candidates.append({\n            \"id\": bid,\n            \"text\": nodes[bid].get(\"text\", \"\"),\n            \"type\": \"gate\",\n            \"gated\": gated,\n        })\n\n    # 2. Find negative IN beliefs\n    if not no_negative:\n        negative = _get_negative_beliefs(nodes, model=model)\n        gate_ids = set(blockers.keys())\n        for belief in negative:\n            if belief[\"id\"] not in gate_ids:\n                candidates.append({\n                    \"id\": belief[\"id\"],\n                    \"text\": belief[\"text\"],\n                    \"type\": \"negative\",\n                })\n\n    if not candidates:\n        click.echo(\"No active blockers or negative beliefs found.\")\n        return\n\n    gate_count = sum(1 for c in candidates if c[\"type\"] == \"gate\")\n    neg_count = sum(1 for c in candidates if c[\"type\"] == \"negative\")\n    click.echo(\n        f\"Found {gate_count} gated blocker(s) and {neg_count} negative belief(s)\",\n        err=True,\n    )\n\n    # Detect platform\n    config = _load_config()\n    target_repo_path = config.get(\"repo_path\", os.getcwd()) if config else os.getcwd()\n    project_dir = config.get(\"project_dir\") if config else None\n\n    platform = platform_override\n    if not repo_slug or not platform:\n        detected_platform, detected_slug = _detect_platform(target_repo_path)\n        if not platform:\n            platform = detected_platform\n        if not repo_slug:\n            repo_slug = detected_slug\n\n    if not platform or not repo_slug:\n        click.echo(\"Error: Could not detect platform/repo. Use --repo and --platform flags.\", err=True)\n        sys.exit(1)\n\n    cli_tool = \"gh\" if platform == \"github\" else \"glab\"\n    if not shutil.which(cli_tool):\n        click.echo(f\"Error: {cli_tool} CLI not found. Install it first.\", err=True)\n        sys.exit(1)\n\n    click.echo(f\"Platform: {platform}, Repo: {repo_slug}\", err=True)\n\n    # Dedup against existing issues\n    all_ids = [c[\"id\"] for c in candidates]\n    all_texts = {c[\"id\"]: c[\"text\"] for c in candidates}\n    if not dry_run:\n        click.echo(\"Checking for existing issues...\", err=True)\n        existing = _find_existing_issues(platform, repo_slug, all_ids, all_texts)\n        if existing:\n            click.echo(f\"  {len(existing)} already have issues: {', '.join(sorted(existing))}\", err=True)\n    else:\n        existing = set()\n\n    remaining = [c for c in candidates if c[\"id\"] not in existing]\n\n    # Confirm issues still exist in code (skip during dry-run to avoid LLM costs)\n    if not dry_run and not skip_confirm and remaining and check_model_available(model):\n        click.echo(f\"Confirming {len(remaining)} candidate(s) against current code...\", err=True)\n        confirmed = _confirm_beliefs(\n            remaining, nodes, target_repo_path,\n            model=model, timeout=timeout, project_dir=project_dir,\n        )\n        unconfirmed = len(remaining) - len(confirmed)\n        if unconfirmed:\n            click.echo(f\"  {unconfirmed} belief(s) no longer present in code\", err=True)\n        remaining = confirmed\n\n    # Ensure required labels exist\n    if not dry_run and remaining:\n        required_labels = {\"reasons-gate\", \"reasons-negative\"} | set(labels)\n        _ensure_labels(platform, repo_slug, required_labels)\n\n    # File issues\n    filed = []\n    skipped_ids = list(existing)\n\n    for candidate in sorted(remaining, key=lambda c: c[\"id\"]):\n        ctype = candidate[\"type\"]\n        issue_labels = [f\"reasons-{ctype}\"] + list(labels)\n        title = f\"[{candidate['id']}] {candidate['text'][:80]}\"\n\n        if ctype == \"gate\":\n            body = _build_issue_body(\n                {\"id\": candidate[\"id\"], \"text\": candidate[\"text\"]},\n                candidate[\"gated\"],\n            )\n        else:\n            body = _build_negative_issue_body(candidate)\n\n        if dry_run:\n            click.echo(f\"\\n  WOULD FILE ({ctype}): {title}\")\n            if ctype == \"gate\":\n                click.echo(f\"  Blocks: {', '.join(g['id'] for g in candidate['gated'])}\")\n            click.echo(f\"  Labels: {', '.join(issue_labels)}\")\n            continue\n\n        click.echo(f\"  Filing: {candidate['id']}...\", err=True)\n        url = _create_issue(platform, repo_slug, title, body, issue_labels)\n        if url:\n            filed.append((candidate[\"id\"], url))\n            click.echo(f\"  OK {candidate['id']}: {url}\")\n        else:\n            click.echo(f\"  FAIL {candidate['id']}\")\n\n    # Summary\n    if dry_run:\n        click.echo(\n            f\"\\nDry run: {len(remaining)} would be filed, \"\n            f\"{len(existing)} already exist, \"\n            f\"{len(candidates) - len(remaining) - len(existing)} filtered\"\n        )\n    else:\n        click.echo(f\"\\nFiled {len(filed)} issue(s), skipped {len(skipped_ids)}\")\n        for bid, url in filed:\n            click.echo(f\"  {bid}: {url}\")"
+  },
+  "build_negative_issue_body": {
+    "function": "_build_negative_issue_body",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2969,
+    "end_line": 2986,
+    "source": "def _build_negative_issue_body(belief: dict) -> str:\n    \"\"\"Build issue body for a negative IN belief.\"\"\"\n    lines = [\n        \"## Problem\",\n        \"\",\n        belief[\"text\"],\n        \"\",\n        \"## Resolution\",\n        \"\",\n        \"When this issue is resolved, retract the belief:\",\n        \"```bash\",\n        f\"reasons retract {belief['id']} --reason \\\"Fixed in <PR/commit>\\\"\",\n        \"```\",\n        \"\",\n        \"---\",\n        \"*Filed automatically from reasons network by `code-expert file-issues`*\",\n    ]\n    return \"\\n\".join(lines)"
+  },
+  "build_issue_body": {
+    "function": "_build_issue_body",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2940,
+    "end_line": 2966,
+    "source": "def _build_issue_body(blocker_node: dict, gated_nodes: list[dict]) -> str:\n    \"\"\"Build issue body from a blocker node and the gated nodes it blocks.\"\"\"\n    lines = [\n        f\"## Problem\",\n        f\"\",\n        f\"{blocker_node['text']}\",\n        f\"\",\n        f\"## Impact\",\n        f\"\",\n        f\"This blocks {len(gated_nodes)} belief(s) in the knowledge base:\",\n        f\"\",\n    ]\n    for gated in gated_nodes:\n        lines.append(f\"- **{gated['id']}**: {gated['text'][:120]}\")\n    lines.extend([\n        f\"\",\n        f\"## Resolution\",\n        f\"\",\n        f\"When this issue is resolved, retract the blocker belief to restore gated conclusions:\",\n        f\"```bash\",\n        f\"reasons retract {blocker_node['id']} --reason \\\"Fixed in <PR/commit>\\\"\",\n        f\"```\",\n        f\"\",\n        f\"---\",\n        f\"*Filed automatically from reasons network by `code-expert file-issues`*\",\n    ])\n    return \"\\n\".join(lines)"
+  },
+  "ensure_labels_callers": {
+    "symbol": "_ensure_labels",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2989,
+        "text": "def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:",
+        "context_function": "_build_negative_issue_body",
+        "context_snippet": "   2986:     return \"\\n\".join(lines)\n   2987: \n   2988: \n>> 2989: def _ensure_labels(platform: str, repo_slug: str, required: set[str]) -> None:\n   2990:     \"\"\"Create any missing labels on the target repo.\"\"\"\n   2991:     if platform == \"github\":\n   2992:         result = subprocess.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3529,
+        "text": "_ensure_labels(platform, repo_slug, required_labels)",
+        "context_function": "file_issues",
+        "context_snippet": "   3526:     # Ensure required labels exist\n   3527:     if not dry_run and remaining:\n   3528:         required_labels = {\"reasons-gate\", \"reasons-negative\"} | set(labels)\n>> 3529:         _ensure_labels(platform, repo_slug, required_labels)\n   3530: \n   3531:     # File issues\n   3532:     filed = []"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "cli_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "file_imports_cli": {
+    "file": "ftl_code_expert/cli.py",
+    "imports": [
+      "asyncio",
+      "json",
+      "os",
+      "re",
+      "shutil",
+      "subprocess",
+      "sys",
+      "click"
+    ],
+    "from_imports": [
+      {
+        "module": "__future__",
+        "names": [
+          "annotations"
+        ]
+      },
+      {
+        "module": "datetime",
+        "names": [
+          "date",
+          "datetime",
+          "timezone"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "language",
+        "names": [
+          "detect_language",
+          "PYTHON"
+        ]
+      },
+      {
+        "module": "git_utils",
+        "names": [
+          "commits_since_checkpoint",
+          "extract_symbol",
+          "find_related_tests",
+          "get_commit_log",
+          "get_diff",
+          "get_diff_since",
+          "get_diff_since_commit",
+          "get_file_content",
+          "get_imports",
+          "get_repo_structure",
+          "list_commits_with_files",
+          "list_source_files",
+          "load_diff_checkpoint",
+          "save_diff_checkpoint"
+        ]
+      },
+      {
+        "module": "llm",
+        "names": [
+          "check_model_available",
+          "invoke",
+          "invoke_concurrent",
+          "invoke_concurrent_sync",
+          "invoke_sync"
+        ]
+      },
+      {
+        "module": "observations",
+        "names": [
+          "parse_observation_requests",
+          "run_observations"
+        ]
+      },
+      {
+        "module": "prompts",
+        "names": [
+          "PROPOSE_BELIEFS_CODE",
+          "RESEARCH_INFER_FILES_PROMPT",
+          "REVIEW_PROMPT",
+          "VERIFY_INFER_FILE_PROMPT",
+          "VERIFY_OBSERVE_PROMPT",
+          "VERIFY_PROMPT",
+          "build_diff_prompt",
+          "build_diff_summary_prompt",
+          "build_file_prompt",
+          "build_function_prompt",
+          "build_observe_prompt",
+          "build_repo_prompt",
+          "build_scan_prompt"
+        ]
+      },
+      {
+        "module": "topics",
+        "names": [
+          "Topic",
+          "add_topics",
+          "load_queue",
+          "parse_topics_from_response",
+          "pending_count",
+          "pop_at",
+          "pop_batch",
+          "pop_multiple",
+          "pop_next",
+          "skip_topic"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"Command-line interface for code expert.\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nfrom datetime import date, datetime, timezone\nfrom pathlib import Path\n\nimport click\n\nfrom .language import detect_language, PYTHON\nfrom .git_utils import (\n    commits_since_checkpoint,\n    extract_symbol,\n    find_related_tests,\n    get_commit_log,\n    get_diff,\n    get_diff_since,\n    get_diff_since_commit,\n    get_file_content,\n    get_imports,\n    get_repo_structure,\n    list_commits_with_files,\n    list_source_files,\n    load_diff_checkpoint,\n    save_diff_checkpoint,\n)\nfrom .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync\nfrom .observations import parse_observation_requests, run_observations\nfrom .prompts import (\n    PROPOSE_BELIEFS_CODE,\n    RESEARCH_INFER_FILES_PROMPT,\n    REVIEW_PROMPT,\n    VERIFY_INFER_FILE_PROMPT,\n    VERIFY_OBSERVE_PROMPT,\n    VERIFY_PROMPT,\n    build_diff_prompt,\n    build_diff_summary_prompt,\n    build_file_prompt,\n    build_function_prompt,\n    build_observe_prompt,\n    build_repo_prompt,\n    build_scan_prompt,\n)\nfrom .topics import (\n    Topic,\n    add_topics,\n    load_queue,\n    parse_topics_from_response,\n    pending_count,\n    pop_at,\n    pop_batch,\n    pop_multiple,\n    pop_next,\n    skip_topic,\n)\n\nPROJECT_DIR = \".code-expert\"\n\n\n# --- Config helpers ---\n\n\ndef _load_config() -> dict | None:\n    \"\"\"Load .code-expert/config.json if it exists.\"\"\""
+  }
+}

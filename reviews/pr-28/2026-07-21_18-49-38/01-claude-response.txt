@@ -1,0 +1,77 @@
+I'll proceed with the review based on manual regex analysis since Python execution isn't available. Let me verify one more thing about the `_CONFIG_TO_LANGUAGE` mapping.
+
+Looking at the file, I can see `"go.mod": "go"` is already present at line 151 in `_CONFIG_TO_LANGUAGE`. The integration is complete — `detect_language` will find `go.mod` and return the `GO` profile.
+
+Let me also check the `module_name_from_path` method and how it handles Go.
+
+The `module_name_from_path` method (lines 30-37) will hit the `else` branch for Go (since `self.name != "python"`), returning `os.path.basename(name)` — which for Go will strip the path and extension, giving just the filename without `.go`. This is reasonable for Go, where the package name doesn't derive from the file path the way Python modules do.
+
+Now let me analyze the `import_line_prefixes` setting for Go. The value is `["import"]`. The `matches_import` method checks `stripped.startswith(p)`. In Go, imports look like:
+- `import "fmt"`
+- `import (`
+
+Both start with `import`, so this works. However, inside a grouped import block:
+```go
+import (
+    "fmt"
+    "os"
+)
+```
+
+The individual import lines like `"fmt"` would NOT be caught — only the `import` line itself. This is a minor limitation but consistent with how other languages handle it — the prefix only flags the start of an import section.
+
+Now let me analyze the definition patterns more carefully:
+
+**Pattern 1**: `r"^func\s+(\(\s*\w+\s+\*?\w[\w\[\], ]*\)\s+)?{symbol}\s*[\[(]"`
+- `^func\s+` — matches `func ` at line start
+- `(\(\s*\w+\s+\*?\w[\w\[\], ]*\)\s+)?` — optional method receiver like `(s *Server)` or `(s Server[T])`
+- `{symbol}\s*[\[(]` — the symbol name followed by `[` (generics) or `(` (params)
+
+**Concern with the catch-all pattern**: `r"^{symbol}\s*[=\s]"` — this matches `{symbol}` followed by `=` or any whitespace. This is very broad. In Go code, a line like `MyFunc(args)` at top level (a function call in an `init` function is always indented, but a top-level call wouldn't match since `_extract_symbol_brace` matches against `.lstrip()` — wait, actually it does use `stripped = line.lstrip()` on line 247. So a bare `DoSomething(args)` in an `init()` function body would be indented and `.lstrip()` would strip that indentation, making `DoSomething` appear at position 0. But `DoSomething(args)` doesn't match `^DoSomething\s*[=\s]` because `(` is neither `=` nor whitespace. So the false positive risk is limited to cases like `MyVar something` which is unlikely in Go.
+
+Actually wait — `[=\s]` is a character class containing `=` and `\s`. Inside a character class, `\s` matches whitespace characters. So `^{symbol}\s*[=\s]` matches the symbol followed by optional whitespace, then either `=` or a whitespace char. This would match things like:
+- `MaxRetries = 5` (assignment)  
+- `MaxRetries int` (top-level grouped var member — but those are indented)
+
+This is intended to catch constants/variables in grouped declarations after `lstrip()`. But it could also match comments or other constructs where a symbol appears at the start of a stripped line followed by whitespace. The risk is moderate — it's a fallback pattern.
+
+**Concern about grouped `var`/`const`**: In Go, grouped declarations are common:
+```go
+const (
+    A = 1
+    B = 2
+)
+```
+The `^const\s+{symbol}\b` pattern won't match `A = 1` inside a group. The catch-all `^{symbol}\s*[=\s]` would match after `lstrip()`, but the brace extractor would then start extracting from that indented line and likely capture incorrect scope. However, this is the same limitation that existed in the previous commit's patterns and is a known tradeoff.
+
+---
+
+### ftl_code_expert/language.py (GO profile addition)
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The Go language profile is correctly structured and properly wired into both `LANGUAGE_REGISTRY` and `_CONFIG_TO_LANGUAGE` (the `"go.mod": "go"` entry already existed). The `detect_language` function will correctly detect Go repos via `go.mod`. Two concerns:
+
+1. **Catch-all pattern overbroad** (line 121): `r"^{symbol}\s*[=\s]"` will match any line where the symbol appears at the start (after lstrip) followed by whitespace or `=`. Since `_extract_symbol_brace` uses `stripped = line.lstrip()` before pattern matching, this can match indented lines inside function bodies or grouped declarations, leading to false-positive definition matches and incorrect scope extraction. The other language profiles (Python, C++, Rust) don't have an equivalently broad catch-all. Consider removing this pattern or constraining it to only match assignment with `=` (i.e., `r"^{symbol}\s*="`).
+
+2. **import_line_prefixes only catches `import` keyword** (line 124): Go's grouped import syntax means individual import lines (`"fmt"`, `"os"`) inside `import (...)` blocks won't be identified as imports. This is a minor limitation — the `import` keyword line itself is caught, which is likely sufficient for the tool's purposes.
+
+3. **No test coverage**: The project has no test files at all, so this is consistent with the existing codebase, but the definition patterns (especially the complex generic-receiver regex) would benefit from unit tests.
+
+The integration is complete — `GO` is in `LANGUAGE_REGISTRY`, `go.mod` maps to `"go"` in `_CONFIG_TO_LANGUAGE`, scope extraction uses `"brace"` style which correctly handles Go's `{}` blocks.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not execute Python to verify regex patterns against real Go constructs (permission denied). Analysis of pattern correctness is based on manual regex tracing. Could not verify whether the `module_name_from_path` output is meaningful for Go's package system (Go packages are directory-based, not file-based). No test files exist in the project to check for regressions.
+---
+
+### FEATURE_REQUESTS
+- Include the full `LanguageProfile` dataclass definition in observations when reviewing a new profile addition, so field semantics can be verified without reading the whole file
+- Run regex patterns against sample inputs as part of the observation phase to verify correctness empirically
+- Flag when a project has zero test coverage so the reviewer can weight the UNTESTED verdict appropriately (known gap vs. regression)
+---

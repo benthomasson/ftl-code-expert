@@ -1,0 +1,87 @@
+### ftl_code_expert/cli.py:research
+VERDICT: BLOCK
+CORRECTNESS: BROKEN
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING: In Step 7, calling `ctx.invoke(propose_beliefs, auto_accept=True)` will raise a `TypeError` in Python. The function `propose_beliefs` has the signature `def propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all, auto_accept, since)` where none of the arguments except `ctx` (automatically managed by Click) have Python default values. Since `ctx.invoke` is a direct function invocation wrapper, Python will fail to bind the other positional/keyword arguments. This will cause `TypeError: propose_beliefs() missing 6 required positional arguments: 'batch_size', 'output', 'model', 'entry_paths', 'process_all', and 'since'`. While the error is caught, it prints a warning and completely skips proposing and auto-accepting the new beliefs, breaking the core "explore → propose → accept" loop.
+To fix this, the call should explicitly pass the default values/arguments:
+```python
+ctx.invoke(
+    propose_beliefs,
+    batch_size=5,
+    output="proposed-beliefs.md",
+    model=None,
+    entry_paths=None,
+    process_all=False,
+    auto_accept=True,
+    since=None
+)
+```
+---
+
+### ftl_code_expert/cli.py:_get_explored_files
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Correctly scans the first 5 lines of each markdown file in `entries/` for the `# File: <path>` header to collect explored files. One minor concern is that `entry_path.read_text()` uses the system default encoding, which could theoretically raise `UnicodeDecodeError` or behave inconsistently depending on the platform's default encoding (e.g., on Windows), but since the project runs on Darwin/Unix and uses standard UTF-8 files, it is generally safe. Adding `encoding="utf-8"` would be more robust.
+---
+
+### ftl_code_expert/cli.py:_parse_review_candidates
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Parses the review JSON file and filters candidates where `sufficient` or `valid` are false. Similar to above, `open(review_file)` has no explicit encoding. Using `open(review_file, encoding="utf-8")` is recommended.
+---
+
+### ftl_code_expert/cli.py:_parse_inferred_files
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The non-greedy regex `r"\[.*?\]"` works well for flat JSON arrays, but could fail or behave unexpectedly if the LLM output contains nested brackets (e.g. `[["file1.py"]]` would yield `[["file1.py"]` which fails JSON parsing, or if there is preceding bracketed text like reference markers `[1]`). 
+Furthermore, the extracted relative file paths `f` are passed directly to `os.path.join(abs_repo, f)` and checked with `os.path.isfile(abs_path)`. There is no check to ensure `f` is a relative path that doesn't escape `abs_repo` (e.g., via directory traversal like `../../etc/passwd` or absolute path `/etc/passwd`). While the repository environment is trusted, it is a code safety concern when handling raw LLM outputs.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: Correctly imports and re-exports `RESEARCH_INFER_FILES_PROMPT`.
+---
+
+### ftl_code_expert/prompts/research.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Well-structured prompt that provides clear instructions, context placeholders (`belief_id`, `belief_text`, `comment`, `repo_tree`, `explored_files`), and a concrete JSON example to guide the model.
+---
+
+### SELF_REVIEW
+LIMITATIONS: Did not have full context of `ftl_code_expert/cli.py` or definition of `Topic` class, but the observation results for relevant functions and types were sufficient to verify integration points.
+---
+
+### FEATURE_REQUESTS
+- Automatically run linting and signature-matching checks on internal `ctx.invoke` calls to catch argument binding mismatches.
+- Show signatures of Click command callbacks directly when checking integration in observation results.

@@ -1,0 +1,54 @@
+## Code Review
+
+### ftl_code_expert/cli.py:_ensure_labels
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Two issues:
+
+1. **GitLab label parsing is broken.** The GitHub path correctly uses `--json name -q ".[].name"` to get one label name per line, but the GitLab path uses bare `glab label list` which outputs a formatted table (columns with Name, Description, Color, etc.). Splitting on newlines will produce table headers and formatted rows, not clean label names. The `required - existing` set difference will never match, so every label will be "missing" and `glab label create` will be called unnecessarily. Creates for already-existing labels fail silently so this doesn't crash, but the dedup logic is dead code on GitLab. Fix: use `glab label list --output json` and parse JSON, or use a jq-style filter equivalent.
+
+2. **`gh label list` pagination.** Default limit is 30 labels. Repos with many labels may not return all existing labels, causing redundant create attempts. Minor since creation failures are swallowed, but adding `-L 1000` would make the check reliable.
+
+Neither issue causes data loss or crashes — label creation is idempotent (fails silently for duplicates) — so this is a CONCERN, not a BLOCK.
+
+---
+
+### ftl_code_expert/cli.py:file_issues (integration point)
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The integration at lines 3527-3529 is correctly placed: after dedup and confirmation, before filing. The guard conditions (`not dry_run and remaining`) are appropriate. The required label set `{"reasons-gate", "reasons-negative"} | set(labels)` correctly covers both hardcoded labels (matching the `f"reasons-{ctype}"` pattern in the filing loop where ctype is "gate" or "negative") and user-supplied `--label` values. No issues with the wiring itself.
+
+---
+
+### ftl_code_expert/data/CLAUDE.md.template
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: N/A
+REASONING: Documentation-only additions. The verification commands section and "Using the Reasons Database" guide are clear, accurate, and consistent with the CLI commands visible in the codebase. No code impact.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: No test files exist for cli.py (confirmed by observations), so I cannot verify whether any test infrastructure exists that should have been extended. Could not verify the exact output format of `glab label list` at runtime — my concern about table-formatted output is based on known glab CLI behavior but not confirmed against the specific version in use. Could not see the full `_detect_platform` or `_find_existing_issues` functions to verify they handle the same platform strings consistently.
+
+---
+
+### FEATURE_REQUESTS
+- Include the output format of external CLI tools (`gh`, `glab`) when subprocess calls parse their stdout — a quick runtime sample or man-page excerpt would help verify parsing logic
+- Flag functions with zero test coverage automatically in the observation results, with a note about whether sibling functions have tests (to distinguish "no tests exist for this module" from "this function was skipped")
+
+---

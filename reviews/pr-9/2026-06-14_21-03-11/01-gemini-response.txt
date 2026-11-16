@@ -1,0 +1,78 @@
+Here is my senior code review of the proposed changes.
+
+---
+
+### ftl_code_expert/cli.py:_parse_inferred_files
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The function extracts a JSON array from the model's response using the regex `re.search(r"\[.*?\]", response, re.DOTALL)`. This is highly fragile. If the LLM includes any conversational text that contains square brackets prior to the actual JSON array (e.g., `"I have reviewed belief [belief-123] and suggest..."`), the regex will match `[belief-123]`. `json.loads` will then fail with a `JSONDecodeError`, and the entire extraction will return an empty list `[]`, ignoring the actual file list array. 
+
+**Recommendation:**
+Instead of using `re.search`, iterate through all matches using `re.finditer` and try to parse each bracketed expression as a list of strings until one succeeds:
+```python
+def _parse_inferred_files(response: str) -> list[str]:
+    """Extract JSON array of file paths from LLM response."""
+    for m in re.finditer(r"\[.*?\]", response, re.DOTALL):
+        try:
+            files = json.loads(m.group(0))
+            if isinstance(files, list) and all(isinstance(f, str) for f in files):
+                return files
+        except json.JSONDecodeError:
+            continue
+    return []
+```
+---
+
+### ftl_code_expert/cli.py:research
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command is well-structured and maps the entire evidence-driven exploration pipeline correctly. However, there is an inconsistency in how errors are handled during topic explanation:
+1. **Parallel execution:** If a topic explanation fails, `_explore_topics_concurrent` catches the exception via `asyncio.gather(return_exceptions=True)`. The command logs the error and proceeds to process the remaining topics.
+2. **Sequential execution:** If a topic explanation fails, `_run_file_topic` intercepts the exception and immediately invokes `sys.exit(1)`, terminating the entire research execution prematurely and skipping the rest of the topics.
+
+Additionally, `open` is called in `_parse_review_candidates` without specifying `encoding="utf-8"`, which could cause decoding errors on platforms where the system default encoding is not UTF-8.
+
+**Recommendation:**
+Harmonize the sequential execution to log errors and continue (similar to the parallel execution) rather than aborting immediately with `sys.exit(1)`. Always specify `encoding="utf-8"` on `open()`.
+---
+
+### ftl_code_expert/prompts/research.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The prompt template is clear, structured, and properly leverages relevant context (the belief claim, review comments, repository tree, and already explored files). It explicitly asks the LLM to output ONLY the JSON array to minimize formatting variation.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The prompt module correctly imports and exports `RESEARCH_INFER_FILES_PROMPT` in `__all__`, making it available for clean usage in `cli.py`.
+---
+
+### SELF_REVIEW
+LIMITATIONS: No existing unit tests or test frameworks are configured in the repository (as verified by the absence of test files in `ftl_code_expert` or root and empty optional dependencies), so the execution and coverage of the command could not be verified programmatically in this project's ecosystem.
+---
+
+### FEATURE_REQUESTS
+- Implement a basic unit testing framework (e.g., `pytest` or Python's native `unittest` library) with mock responses for the LLM component to allow robust test verification of the parsing and command flows.
+- Show code callers of functions imported/exported from `git_utils.py` and `llm.py` to make architectural dependencies even clearer during review.
+---

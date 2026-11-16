@@ -1,0 +1,20 @@
+```json
+[
+  {"name": "init_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "init"}},
+  {"name": "scan_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "scan"}},
+  {"name": "explore_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "explore"}},
+  {"name": "propose_beliefs_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "propose_beliefs"}},
+  {"name": "review_proposals_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "review_proposals"}},
+  {"name": "accept_beliefs_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "accept_beliefs"}},
+  {"name": "derive_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "derive"}},
+  {"name": "generate_summary_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "generate_summary"}},
+  {"name": "file_issues_signature", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "file_issues"}},
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "pending_count_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "pending_count"}},
+  {"name": "get_project_dir_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_get_project_dir"}},
+  {"name": "caffeinate_module", "tool": "function_body", "params": {"file_path": "ftl_code_expert/caffeinate.py", "function_name": "hold"}},
+  {"name": "analyze_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "load_network_raises", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "ctx_obj_repo_usages", "tool": "find_usages", "params": {"symbol": "ctx.obj[\"repo\"]"}}
+]
+```

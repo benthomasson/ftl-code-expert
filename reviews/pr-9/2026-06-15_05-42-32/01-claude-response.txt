@@ -1,0 +1,100 @@
+## Code Review: `research` command
+
+### ftl_code_expert/prompts/research.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean prompt template. Format placeholders (`{belief_id}`, `{belief_text}`, `{comment}`, `{repo_tree}`, `{explored_files}`) match the `.format()` call in the research command. Properly exported through `prompts/__init__.py` and `__all__`.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Standard re-export plumbing. Import and `__all__` entry both added.
+---
+
+### ftl_code_expert/cli.py:_get_explored_files
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Scans first 5 lines of entry files for `# File:` headers — matches the format used by `_create_entry` elsewhere. `OSError` catch on per-file reads is appropriate. Returns an empty set gracefully when `entries/` doesn't exist.
+---
+
+### ftl_code_expert/cli.py:_parse_review_candidates
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Uses bare `json.load` with no error handling — a malformed review JSON will produce an unhandled exception with no user-friendly message. More importantly, callers later access `c['id']` and `c['comment']` with direct dict indexing (not `.get()`). If the review JSON has entries missing these keys, a `KeyError` propagates with no context. Since this reads LLM-generated review output, defensive access would be prudent.
+---
+
+### ftl_code_expert/cli.py:_parse_inferred_files
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The `\[.*?\]` regex with `re.DOTALL` is non-greedy and will match the first complete bracket pair. For simple string arrays (which the prompt requests), this is reliable. Type validation (`isinstance` checks) is good. Falls back to empty list on parse failure.
+---
+
+### ftl_code_expert/cli.py:research
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command is well-structured and follows existing patterns in the codebase (same explore/propose pipeline, same concurrency approach). Path traversal protection on LLM-inferred paths is present and correct (`os.path.isabs` + `..` check + `os.path.isfile`). Two concerns:
+
+1. **No tests at all.** The observation confirms `test_count: 0`. The helper functions (`_get_explored_files`, `_parse_review_candidates`, `_parse_inferred_files`) are pure and easily testable — they should have unit tests.
+
+2. **`ctx.invoke(propose_beliefs, auto_accept=True)`** in step 7 relies on Click parameter defaults for `batch_size`, `output`, `model`, `entry_paths`, `process_all`, `since`. This works today but is brittle — if `propose_beliefs` adds a required parameter or changes a default, this call silently changes behavior. Consider passing key parameters explicitly.
+
+The integration is solid: the command reuses `_explore_topics_concurrent`, `_finalize_topic`, `_run_file_topic`, `_load_network`, `invoke_concurrent_sync`, `get_repo_structure`, and `Topic` — all existing infrastructure. The CLI registration via `@cli.command("research")` wires it into the group automatically.
+---
+
+## Summary
+
+| Verdict | Count |
+|---------|-------|
+| PASS    | 4     |
+| CONCERN | 2     |
+| BLOCK   | 0     |
+
+**Key findings:**
+
+1. **No test coverage** — the three helper functions are pure functions ideal for unit testing. `_parse_inferred_files` especially deserves tests for edge cases (empty response, malformed JSON, nested brackets).
+
+2. **Fragile JSON key access** — `c['id']` and `c['comment']` in the research command body will `KeyError` on malformed review entries. Use `.get()` with a fallback or skip entries missing required fields.
+
+3. **Implicit parameter coupling** — `ctx.invoke(propose_beliefs, auto_accept=True)` depends on all other `propose_beliefs` defaults remaining stable.
+
+None of these are blockers — the code is functionally correct and follows established codebase patterns well.
+
+### SELF_REVIEW
+LIMITATIONS: Could not see the `invoke_concurrent_sync`, `get_repo_structure`, or `check_model_available` implementations (imported from `.llm` and `.git_utils`). Could not verify the review JSON schema that `_parse_review_candidates` expects. Could not see the `Topic` dataclass/namedtuple definition to confirm field names match.
+---
+
+### FEATURE_REQUESTS
+- Include the schema or sample output of upstream commands (e.g. `review-beliefs` JSON format) when the diff parses their output — lets reviewers verify field access is correct.
+- Show the `Topic` class definition when it's constructed in new code — field name mismatches are a common source of bugs.
+---

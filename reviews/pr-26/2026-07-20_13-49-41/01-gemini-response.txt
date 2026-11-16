@@ -1,0 +1,32 @@
+### ftl_code_expert/cli.py:_ensure_labels
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: 
+1. **GitLab JSON Parsing Crash Risk**: If `glab label list` outputs a JSON dictionary instead of an array (e.g., on error or different response format such as `{"message": "..."}`), the loop `for item in json.loads(...)` will iterate over string keys. Calling `item.get("name", "")` on a string will raise an `AttributeError` (since strings do not have a `.get` method). This exception is not caught by the `except (json.JSONDecodeError, TypeError):` block and will crash the `file-issues` command.
+2. **GitLab CLI Argument Structure (`glab label create`)**: The GitLab CLI (`glab`) requires specifying the label name via the `-n` or `--name` option (e.g., `glab label create --name <label>`). Passing the label name as a positional argument like `["glab", "label", "create", label, ...]` is invalid syntax for `glab` and will fail or block waiting for interactive input.
+3. **No Test Coverage**: This newly introduced function is completely untested.
+
+---
+
+### ftl_code_expert/data/CLAUDE.md.template
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: 
+The newly added documentation is clear, accurate, and provides high-value instructions for developers and agents using the reasons database and code verification workflows.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Did not have access to live GitHub/GitLab CLI credentials or binary environments to execute the exact commands and verify their behavior against different API responses.
+- No issue or PR specification was provided, so the assessment is centered entirely on general robustness, syntax compatibility, and code quality.

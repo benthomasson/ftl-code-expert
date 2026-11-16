@@ -1,0 +1,16 @@
+```json
+[
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "invoke_concurrent_sync_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_concurrent_sync"}},
+  {"name": "explore_topics_concurrent_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_explore_topics_concurrent"}},
+  {"name": "finalize_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_finalize_topic"}},
+  {"name": "run_file_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_run_file_topic"}},
+  {"name": "propose_beliefs_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "propose_beliefs"}},
+  {"name": "topic_class_hierarchy", "tool": "class_hierarchy", "params": {"class_name": "Topic", "file_path": "ftl_code_expert/topics.py"}},
+  {"name": "check_model_available_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "check_model_available"}},
+  {"name": "get_repo_structure_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "get_repo_structure"}},
+  {"name": "research_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "parse_inferred_raises", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_parse_inferred_files"}},
+  {"name": "cli_file_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}}
+]
+```

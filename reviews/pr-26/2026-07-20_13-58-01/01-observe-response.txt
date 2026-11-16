@@ -1,0 +1,10 @@
+```json
+[
+  {"name": "file_issues_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "file_issues"}},
+  {"name": "create_issue_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_create_issue"}},
+  {"name": "cli_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "ensure_labels_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "ensure_labels_callers", "tool": "find_callers", "params": {"symbol": "_ensure_labels"}},
+  {"name": "build_negative_issue_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_build_negative_issue_body"}}
+]
+```

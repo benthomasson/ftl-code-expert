@@ -1,0 +1,107 @@
+I'll review the observations and diff to assess the changes.
+
+### ftl_code_expert/cli.py:_reasons_export
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Bug fix — `reasons export` writes `network.json` directly, so the old `network_path.write_text(result.stdout)` was writing a status message into the file. Removing it is correct. The comment accurately documents the behavior, confirmed by the observation at `reasons_export_behavior`.
+
+---
+
+### ftl_code_expert/cli.py:_auto_gather_verify_observations
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Two issues: (1) `find_symbol` is imported at line 3075 but never used in this function — dead import. (2) The symbol extraction heuristic (`term[0].isupper() or "_" in term`) applied to belief ID segments is fragile. Belief IDs like `login-audit-always-success-info` yield terms like `login`, `audit`, `always` — none of which pass the uppercase/underscore filter, so `symbols` will be empty and the fallback grep on `terms[0]` fires. This is probably the common case, making the `find_usages` path rarely exercised. Not a bug per se, but the symbol extraction logic may be dead weight for most belief IDs.
+
+---
+
+### ftl_code_expert/cli.py:_verify_belief_with_observations
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean two-stage observe pattern: auto-gather seed context, then ask LLM what else it needs. Content truncation at 4000 chars is reasonable. The `display_obs` filtering to exclude `source_key` from the JSON dump avoids duplication in the prompt. `timeout` is correctly threaded through to `invoke()`.
+
+---
+
+### ftl_code_expert/cli.py:_gather_verify_contexts
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Mirrors the existing `_gather_confirmation_context` pattern. Error handling per-belief with stderr output is consistent with project conventions.
+
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The `--no-observe` flag and conditional branching are clean. Two concerns: (1) `_reasons_export()` is called unconditionally before network load, even on `--dry-run` — this is a side effect (writing files) on what the user expects to be a read-only operation. The dry-run check happens ~40 lines later. (2) The re-export adds latency to every `verify` invocation even when the network is already fresh. Consider gating the re-export behind a staleness check or skipping it on `--dry-run`.
+
+---
+
+### ftl_code_expert/prompts/verify.py:VERIFY_OBSERVE_PROMPT
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Prompt is well-structured with clear tool table, output format, and guidelines. The "3-8 observations" guidance is reasonable. The instruction "Do NOT verify the belief yet" is important to prevent the LLM from short-circuiting the observe step. Consistent with the existing `build_observe_prompt` pattern in `prompts/observe.py`.
+
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Standard export addition. `VERIFY_OBSERVE_PROMPT` added to both import and `__all__`.
+
+---
+
+## Summary
+
+The change adds an observation-based context gathering system to `verify`, replacing the simple file-read approach with a two-stage observe loop (auto-gather + LLM-directed). The architecture is sound and follows established patterns in the codebase. The `_reasons_export` bug fix is correct.
+
+Key concerns:
+- **No tests** for any of the new functions
+- **Dead import** of `find_symbol` in `_auto_gather_verify_observations`
+- **Side effect on dry-run**: `_reasons_export()` writes files even when `--dry-run` is passed
+- **Symbol extraction heuristic** will rarely fire for typical kebab-case belief IDs
+
+### SELF_REVIEW
+LIMITATIONS: Could not verify `parse_observation_requests` handles the VERIFY_OBSERVE_PROMPT output format correctly (function body not in observations). Could not verify `_load_network` reads from the file that `_reasons_export` writes. The "related tests" in observations were all sympy false positives — no actual project tests were available to review.
+
+---
+
+### FEATURE_REQUESTS
+- Filter out `.venv/` paths from related test discovery — all four "related tests" were sympy internals, providing zero signal and adding noise
+- Include the body of functions that are called by new code but not in the diff (e.g., `parse_observation_requests`, `_load_network`) when they're key to correctness
+- Flag unused imports automatically as part of observation gathering
+
+---

@@ -1,0 +1,47 @@
+### ftl_code_expert/cli.py:verify
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING:
+
+**Private API usage.** The stamping logic imports `_with_network` from `reasons_lib.api` — the underscore prefix marks it as internal. This couples the verify command to an implementation detail that could change without notice. The stale-retraction code 10 lines below shells out to `reasons retract` via subprocess, which is the more stable pattern. If `reasons_lib` exposes (or could expose) a public `stamp` or `update_node` API, that would be preferable; if not, at minimum the import path should be treated as fragile and documented.
+
+**Direct attribute assignment.** `net.nodes[bid].verified_at = now` assumes the Node object supports arbitrary attribute setting. If Node is later tightened (e.g., `__slots__`, frozen dataclass), this silently fails inside the broad `except Exception`. The broad catch is reasonable for a non-critical side-effect, but it also masks bugs during development — consider logging the exception type at debug level.
+
+**Approach inconsistency.** Retraction uses `subprocess.run(["reasons", "retract", ...])` while stamping uses the Python API directly. Pick one approach — if the Python API is preferred for performance, the retraction could use it too; if the CLI is preferred for stability, stamping should shell out to something like `reasons stamp`.
+
+**No tests.** The stamping path has no test coverage in this diff. A test that verifies `verified_at` is set after a CONFIRMED verdict (and not set after STALE/INCONCLUSIVE) would catch regressions if the `_with_network` API changes.
+
+---
+
+### pyproject.toml
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: PARTIAL
+REASONING:
+
+**Runtime import in dev-only dependency group.** `ftl-reasons` is listed under `[dependency-groups] dev`, but `cli.py` imports `reasons_lib.api` at runtime. This works because the import is guarded by `_has_reasons()` and wrapped in try/except, so it degrades gracefully — but the dependency classification is misleading. If `reasons_lib` is an optional runtime dependency, it should be declared as an optional dependency (`[project.optional-dependencies]`) rather than dev-only, which conventionally means "needed only for testing/linting."
+
+**Local path source.** `path = "../ftl-reasons"` only resolves in a specific workspace layout. This is fine for local dev but will break CI unless the CI checkout mirrors the layout or this is a workspace/monorepo. Not a blocker if this is a known convention in this project, but worth noting.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not inspect `reasons_lib.api._with_network` to verify the Node object supports `verified_at` attribute assignment. Could not see test files to confirm there is truly no coverage. Could not verify whether `_has_reasons()` reliably gates the `reasons_lib` import in all code paths (e.g., if `_has_reasons()` returns True but `reasons_lib` is not installed).
+
+---
+
+### FEATURE_REQUESTS
+- Include the source of imported private APIs (`_with_network`) so reviewers can verify the contract
+- Show test files that cover the modified function, or explicitly note "no test files found"
+- Flag when a dependency is imported at runtime but declared as dev-only
+
+---

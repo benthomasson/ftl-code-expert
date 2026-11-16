@@ -1,0 +1,18 @@
+```json
+[
+  {"name": "explore_topics_concurrent_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_explore_topics_concurrent"}},
+  {"name": "finalize_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_finalize_topic"}},
+  {"name": "run_file_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_run_file_topic"}},
+  {"name": "load_network_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "invoke_concurrent_sync_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_concurrent_sync"}},
+  {"name": "topic_class", "tool": "class_hierarchy", "params": {"class_name": "Topic", "file_path": "ftl_code_expert/topics.py"}},
+  {"name": "propose_beliefs_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "propose_beliefs"}},
+  {"name": "get_repo_structure_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "get_repo_structure"}},
+  {"name": "check_model_available_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "check_model_available"}},
+  {"name": "research_test_coverage", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "load_network_exceptions", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_load_network"}},
+  {"name": "invoke_concurrent_sync_exceptions", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "invoke_concurrent_sync"}},
+  {"name": "cli_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "research_prompt_usages", "tool": "find_usages", "params": {"symbol": "RESEARCH_INFER_FILES_PROMPT"}}
+]
+```

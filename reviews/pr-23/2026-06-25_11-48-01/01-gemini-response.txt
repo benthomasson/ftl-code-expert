@@ -1,0 +1,42 @@
+### ftl_code_expert/cli.py:_verify_belief_with_observations
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The integration of source-file inference logic inside `_verify_belief_with_observations` is clean and elegant. It consolidates the repository tree generation into a single call to `get_repo_structure` with `max_depth=3`, which is reused for both inference and observation prompt generation. It includes safe relative path verification (reversing path traversals and absolute paths) and actual existence checks via `os.path.isfile` before adding the inferred file to the observations context. However, this fallback flow remains completely untested.
+---
+
+### ftl_code_expert/cli.py:infer_sources
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The new `infer-sources` command is well-structured and fully integrated with click. It safely validates inferred paths against directory traversal and checks for local file existence before modifying metadata via `set_metadata`. The concurrent invocation is wrapped to handle individual failures gracefully without aborting the entire command. If updates succeed, it triggers `_reasons_export()` to ensure persistence. The main concern is the complete lack of automated test coverage for this new subcommand.
+---
+
+### ftl_code_expert/prompts/verify.py:VERIFY_INFER_FILE_PROMPT
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: The new prompt is clearly written, instructing the LLM to output a JSON array of exactly one file path. This aligns perfectly with the parsing logic in `_parse_inferred_files`. The template variables (`belief_id`, `belief_text`, and `repo_tree`) are correctly provided.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Shell commands and test execution tools were restricted by environment policies, preventing empirical verification of the new CLI command's execution and behavior.
+---
+
+### FEATURE_REQUESTS
+- Include mock tools or dry-run integrations in the observation results to facilitate verification of shell/CLI commands.
+- Provide a summary of the reasons schema or metadata expectations when reviewing integrations with external state databases (like `reasons.db`).
+---

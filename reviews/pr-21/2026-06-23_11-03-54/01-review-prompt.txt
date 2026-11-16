@@ -1,0 +1,644 @@
+You are a senior code reviewer. Review the following code changes.
+
+## Specification
+
+No specification provided. Focus on correctness, tests, and integration.
+
+
+
+
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 68259d6..d245062 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -24,6 +24,7 @@
+     get_imports,
+     get_repo_structure,
+     list_commits_with_files,
++    list_source_files,
+     load_diff_checkpoint,
+     save_diff_checkpoint,
+ )
+@@ -44,6 +45,7 @@
+     build_scan_prompt,
+ )
+ from .topics import (
++    Topic,
+     add_topics,
+     load_queue,
+     parse_topics_from_response,
+@@ -364,8 +366,20 @@ def scan(ctx):
+     repo_name = os.path.basename(repo_path)
+     _create_entry(f"scan-{repo_name}", f"Scan: {repo_name}", result)
+ 
+-    # Enqueue topics
+-    _enqueue_topics(result, source=f"scan:{repo_name}", project_dir=_get_project_dir(ctx))
++    project_dir = _get_project_dir(ctx)
++
++    # Enumerate all source files as file topics (BFS: breadth before depth)
++    source_files = list_source_files(repo_path)
++    if source_files:
++        file_topics = [
++            Topic(title=f, kind="file", target=f, source=f"scan:{repo_name}")
++            for f in source_files
++        ]
++        added = add_topics(file_topics, project_dir)
++        click.echo(f"Queued {added} file(s) for exploration", err=True)
++
++    # Enqueue LLM-suggested topics (functions, generals appended after files)
++    _enqueue_topics(result, source=f"scan:{repo_name}", project_dir=project_dir)
+ 
+     _emit(ctx, result)
+ 
+@@ -1334,7 +1348,6 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
+         sys.exit(1)
+ 
+     # Build topics for each unique file
+-    from .topics import Topic
+     timeout = ctx.obj["timeout"]
+     parallel = ctx.obj["parallel"]
+     all_topics = []
+@@ -3785,7 +3798,6 @@ def research(ctx, review_file, limit, dry_run):
+         return
+ 
+     # Step 6: Build topics and explore
+-    from .topics import Topic
+     topics = [
+         Topic(
+             title=f"Research: evidence for {', '.join(belief_ids)}",
+diff --git a/ftl_code_expert/git_utils.py b/ftl_code_expert/git_utils.py
+index a0bccae..1153642 100644
+--- a/ftl_code_expert/git_utils.py
++++ b/ftl_code_expert/git_utils.py
+@@ -185,6 +185,40 @@ def get_file_content(path: str) -> str | None:
+         return None
+ 
+ 
++BINARY_EXTENSIONS = frozenset({
++    ".pyc", ".pyo", ".so", ".o", ".a", ".dylib",
++    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
++    ".woff", ".woff2", ".ttf", ".eot",
++    ".mp3", ".mp4", ".wav", ".avi", ".mov",
++    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
++    ".jar", ".war", ".class", ".exe", ".dll",
++    ".bin", ".dat", ".db", ".sqlite", ".sqlite3", ".pdf",
++})
++
++
++def list_source_files(repo_path: str) -> list[str]:
++    """List all tracked source files using git ls-files.
++
++    Filters out binary files by extension. Returns paths relative to repo root.
++    """
++    result = subprocess.run(
++        ["git", "ls-files"],
++        capture_output=True, text=True, cwd=repo_path,
++    )
++    if result.returncode != 0:
++        return []
++    files = []
++    for line in result.stdout.splitlines():
++        line = line.strip()
++        if not line:
++            continue
++        ext = os.path.splitext(line)[1].lower()
++        if ext not in BINARY_EXTENSIONS:
++            files.append(line)
++    files.sort(key=lambda p: (p.count(os.sep), p))
++    return files
++
++
+ def get_repo_structure(repo_path: str, max_depth: int = 4) -> str:
+     """
+     Get filtered directory tree of a repository.
+
+```
+
+## Observation Results
+
+You previously requested observations. Here are the results:
+
+```json
+{
+  "list_source_files_body": {
+    "function": "list_source_files",
+    "file": "ftl_code_expert/git_utils.py",
+    "start_line": 199,
+    "end_line": 219,
+    "source": "def list_source_files(repo_path: str) -> list[str]:\n    \"\"\"List all tracked source files using git ls-files.\n\n    Filters out binary files by extension. Returns paths relative to repo root.\n    \"\"\"\n    result = subprocess.run(\n        [\"git\", \"ls-files\"],\n        capture_output=True, text=True, cwd=repo_path,\n    )\n    if result.returncode != 0:\n        return []\n    files = []\n    for line in result.stdout.splitlines():\n        line = line.strip()\n        if not line:\n            continue\n        ext = os.path.splitext(line)[1].lower()\n        if ext not in BINARY_EXTENSIONS:\n            files.append(line)\n    files.sort(key=lambda p: (p.count(os.sep), p))\n    return files"
+  },
+  "add_topics_body": {
+    "function": "add_topics",
+    "file": "ftl_code_expert/topics.py",
+    "start_line": 66,
+    "end_line": 82,
+    "source": "def add_topics(topics: list[Topic], project_dir: str | None = None) -> int:\n    \"\"\"\n    Add topics to the queue, skipping duplicates by target.\n\n    Returns number of new topics added.\n    \"\"\"\n    queue = load_queue(project_dir)\n    existing_targets = {t.target for t in queue}\n    added = 0\n    for topic in topics:\n        if topic.target not in existing_targets:\n            queue.append(topic)\n            existing_targets.add(topic.target)\n            added += 1\n    if added:\n        save_queue(queue, project_dir)\n    return added"
+  },
+  "topic_class": {
+    "error": "No function found at 'Topic'",
+    "file": "ftl_code_expert/topics.py"
+  },
+  "enqueue_topics_body": {
+    "function": "_enqueue_topics",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 148,
+    "end_line": 155,
+    "source": "def _enqueue_topics(response: str, source: str, project_dir: str | None = None) -> None:\n    \"\"\"Parse topics from model response and add to queue.\"\"\"\n    new_topics = parse_topics_from_response(response, source=source)\n    if new_topics:\n        added = add_topics(new_topics, project_dir)\n        if added:\n            total = pending_count(project_dir)\n            click.echo(f\"Queued {added} new topic(s) ({total} pending)\", err=True)"
+  },
+  "scan_command_body": {
+    "function": "scan",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 330,
+    "end_line": 384,
+    "source": "@cli.command()\n@click.pass_context\ndef scan(ctx):\n    \"\"\"Scan a repo to identify key files and populate the exploration queue.\"\"\"\n    from .caffeinate import hold as _caffeinate\n    _caffeinate()\n    repo_path = _get_repo(ctx)\n    model = ctx.obj[\"model\"]\n    timeout = ctx.obj[\"timeout\"]\n\n    if not check_model_available(model):\n        click.echo(f\"Error: Model '{model}' CLI not available\", err=True)\n        sys.exit(1)\n\n    click.echo(f\"Scanning {repo_path}...\", err=True)\n\n    tree = get_repo_structure(repo_path, max_depth=3)\n    _, config_content = _find_project_config(repo_path)\n    readme_content = get_file_content(os.path.join(repo_path, \"README.md\"))\n    entry_points = _find_entry_points(repo_path, config_content)\n\n    prompt = build_scan_prompt(\n        tree=tree,\n        config_content=config_content,\n        readme_content=readme_content,\n        entry_points=entry_points or None,\n    )\n\n    click.echo(f\"Running {model}...\", err=True)\n    try:\n        result = asyncio.run(invoke(prompt, model, timeout=timeout))\n    except Exception as e:\n        click.echo(f\"Error: {e}\", err=True)\n        sys.exit(1)\n\n    # Create entry\n    repo_name = os.path.basename(repo_path)\n    _create_entry(f\"scan-{repo_name}\", f\"Scan: {repo_name}\", result)\n\n    project_dir = _get_project_dir(ctx)\n\n    # Enumerate all source files as file topics (BFS: breadth before depth)\n    source_files = list_source_files(repo_path)\n    if source_files:\n        file_topics = [\n            Topic(title=f, kind=\"file\", target=f, source=f\"scan:{repo_name}\")\n            for f in source_files\n        ]\n        added = add_topics(file_topics, project_dir)\n        click.echo(f\"Queued {added} file(s) for exploration\", err=True)\n\n    # Enqueue LLM-suggested topics (functions, generals appended after files)\n    _enqueue_topics(result, source=f\"scan:{repo_name}\", project_dir=project_dir)\n\n    _emit(ctx, result)"
+  },
+  "list_source_files_callers": {
+    "symbol": "list_source_files",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 27,
+        "text": "list_source_files,",
+        "context_function": null,
+        "context_snippet": "   24:     get_imports,\n   25:     get_repo_structure,\n   26:     list_commits_with_files,\n>> 27:     list_source_files,\n   28:     load_diff_checkpoint,\n   29:     save_diff_checkpoint,\n   30: )"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 372,
+        "text": "source_files = list_source_files(repo_path)",
+        "context_function": "scan",
+        "context_snippet": "   369:     project_dir = _get_project_dir(ctx)\n   370: \n   371:     # Enumerate all source files as file topics (BFS: breadth before depth)\n>> 372:     source_files = list_source_files(repo_path)\n   373:     if source_files:\n   374:         file_topics = [\n   375:             Topic(title=f, kind=\"file\", target=f, source=f\"scan:{repo_name}\")"
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 199,
+        "text": "def list_source_files(repo_path: str) -> list[str]:",
+        "context_function": "get_file_content",
+        "context_snippet": "   196: })\n   197: \n   198: \n>> 199: def list_source_files(repo_path: str) -> list[str]:\n   200:     \"\"\"List all tracked source files using git ls-files.\n   201: \n   202:     Filters out binary files by extension. Returns paths relative to repo root."
+      }
+    ],
+    "test_callers": [],
+    "production_count": 3,
+    "test_count": 0,
+    "total_count": 3
+  },
+  "topic_import_migration": {
+    "old_name": "from .topics import Topic",
+    "old_name_usages": [],
+    "old_name_count": 0,
+    "stale_references": [],
+    "stale_count": 0,
+    "migration_complete": true,
+    "new_name": "from .topics import Topic",
+    "new_name_usages": [],
+    "new_name_count": 0
+  },
+  "topic_usages": {
+    "symbol": "Topic",
+    "usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/huggingface_hub/utils/_http.py",
+        "line": 901,
+        "text": "Only the first warning for each topic will be shown. Topic is optional and can be empty. Note that s"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/polys/numberfields/modules.py",
+        "line": 1219,
+        "text": ".. [Cohen00] Cohen, H. *Advanced Topics in Computational Number"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/igor.py",
+        "line": 68,
+        "text": "'Differentiate', 'dir', 'Display', 'DisplayHelpTopic', 'DisplayProcedure',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/foxpro.py",
+        "line": 67,
+        "text": "r'DDESetService|DDESetTopic|DDETerminate|DEFAULTEXT|'"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 1102,
+        "text": "print(f\"{prefix}Topic filter: {stats['topic']}\", file=sys.stderr)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/build_wiki.py",
+        "line": 204,
+        "text": "index_lines.append(\"| Topic | Beliefs |\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 48,
+        "text": "Topic,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 375,
+        "text": "Topic(title=f, kind=\"file\", target=f, source=f\"scan:{repo_name}\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 802,
+        "text": "click.echo(f\"[{seq + 1}/{len(valid_topics)}] Topic #{idx}\", err=True)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 805,
+        "text": "click.echo(f\"Topic: [{topic.kind}] {topic.target}\", err=True)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1137,
+        "text": "return result, f\"topic-{safe_label}\", f\"Topic: {topic.title}\", f\"general:{topic.target}\""
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1362,
+        "text": "all_topics.append(Topic("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2324,
+        "text": "click.echo(f\"Topics:   {pending} pending, {done} done, {skipped} skipped\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3802,
+        "text": "Topic("
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 18,
+        "text": "class Topic:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 46,
+        "text": "def load_queue(project_dir: str | None = None) -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 53,
+        "text": "return [Topic(**item) for item in data]"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 56,
+        "text": "def save_queue(queue: list[Topic], project_dir: str | None = None) -> None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 66,
+        "text": "def add_topics(topics: list[Topic], project_dir: str | None = None) -> int:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 85,
+        "text": "def pop_next(project_dir: str | None = None) -> Topic | None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 100,
+        "text": "def pop_at(index: int, project_dir: str | None = None) -> Topic | None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 114,
+        "text": "def pop_multiple(indices: list[int], project_dir: str | None = None) -> list[Topic | None]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 120,
+        "text": "Returns a list of Topics (None for out-of-bounds indices)."
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 143,
+        "text": "def pop_batch(n: int, project_dir: str | None = None) -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 176,
+        "text": "# ## Topics to Explore"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 192,
+        "text": "def parse_topics_from_response(response: str, source: str = \"\") -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 196,
+        "text": "Looks for a \"Topics to Explore\" section with structured items."
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 200,
+        "text": "r\"#+\\s*Topics?\\s+to\\s+Explore\\s*\\n(.*?)(?=\\n#|\\Z)\","
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 218,
+        "text": "topics.append(Topic("
+      },
+      {
+        "file": "ftl_code_expert/prompts/propose.py",
+        "line": 29,
+        "text": "- Performance constraints: \"Topic queue is O(n) scanned on each pop; acceptable for < 1000 topics\""
+      }
+    ],
+    "production_usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/huggingface_hub/utils/_http.py",
+        "line": 901,
+        "text": "Only the first warning for each topic will be shown. Topic is optional and can be empty. Note that s"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/polys/numberfields/modules.py",
+        "line": 1219,
+        "text": ".. [Cohen00] Cohen, H. *Advanced Topics in Computational Number"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/igor.py",
+        "line": 68,
+        "text": "'Differentiate', 'dir', 'Display', 'DisplayHelpTopic', 'DisplayProcedure',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/foxpro.py",
+        "line": 67,
+        "text": "r'DDESetService|DDESetTopic|DDETerminate|DEFAULTEXT|'"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 1102,
+        "text": "print(f\"{prefix}Topic filter: {stats['topic']}\", file=sys.stderr)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/build_wiki.py",
+        "line": 204,
+        "text": "index_lines.append(\"| Topic | Beliefs |\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 48,
+        "text": "Topic,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 375,
+        "text": "Topic(title=f, kind=\"file\", target=f, source=f\"scan:{repo_name}\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 802,
+        "text": "click.echo(f\"[{seq + 1}/{len(valid_topics)}] Topic #{idx}\", err=True)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 805,
+        "text": "click.echo(f\"Topic: [{topic.kind}] {topic.target}\", err=True)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1137,
+        "text": "return result, f\"topic-{safe_label}\", f\"Topic: {topic.title}\", f\"general:{topic.target}\""
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1362,
+        "text": "all_topics.append(Topic("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2324,
+        "text": "click.echo(f\"Topics:   {pending} pending, {done} done, {skipped} skipped\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3802,
+        "text": "Topic("
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 18,
+        "text": "class Topic:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 46,
+        "text": "def load_queue(project_dir: str | None = None) -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 53,
+        "text": "return [Topic(**item) for item in data]"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 56,
+        "text": "def save_queue(queue: list[Topic], project_dir: str | None = None) -> None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 66,
+        "text": "def add_topics(topics: list[Topic], project_dir: str | None = None) -> int:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 85,
+        "text": "def pop_next(project_dir: str | None = None) -> Topic | None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 100,
+        "text": "def pop_at(index: int, project_dir: str | None = None) -> Topic | None:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 114,
+        "text": "def pop_multiple(indices: list[int], project_dir: str | None = None) -> list[Topic | None]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 120,
+        "text": "Returns a list of Topics (None for out-of-bounds indices)."
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 143,
+        "text": "def pop_batch(n: int, project_dir: str | None = None) -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 176,
+        "text": "# ## Topics to Explore"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 192,
+        "text": "def parse_topics_from_response(response: str, source: str = \"\") -> list[Topic]:"
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 196,
+        "text": "Looks for a \"Topics to Explore\" section with structured items."
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 200,
+        "text": "r\"#+\\s*Topics?\\s+to\\s+Explore\\s*\\n(.*?)(?=\\n#|\\Z)\","
+      },
+      {
+        "file": "ftl_code_expert/topics.py",
+        "line": 218,
+        "text": "topics.append(Topic("
+      },
+      {
+        "file": "ftl_code_expert/prompts/propose.py",
+        "line": 29,
+        "text": "- Performance constraints: \"Topic queue is O(n) scanned on each pop; acceptable for < 1000 topics\""
+      }
+    ],
+    "test_usages": [],
+    "production_count": 33,
+    "test_count": 0,
+    "total_count": 33
+  },
+  "scan_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "git_utils_tests": {
+    "source_file": "ftl_code_expert/git_utils.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "list_source_files_raises": {
+    "function": "list_source_files",
+    "file": "ftl_code_expert/git_utils.py",
+    "explicit_raises": [],
+    "calls": [
+      "sort",
+      "count",
+      "splitlines",
+      "run",
+      "append",
+      "lower",
+      "splitext",
+      "strip"
+    ]
+  },
+  "load_queue_body": {
+    "function": "load_queue",
+    "file": "ftl_code_expert/topics.py",
+    "start_line": 46,
+    "end_line": 53,
+    "source": "def load_queue(project_dir: str | None = None) -> list[Topic]:\n    \"\"\"Load the topics queue from disk.\"\"\"\n    path = _queue_path(project_dir)\n    if not os.path.isfile(path):\n        return []\n    with open(path, encoding=\"utf-8\") as f:\n        data = json.load(f)\n    return [Topic(**item) for item in data]"
+  }
+}
+```
+
+Use these results to inform your review. Do not request the same observations again.
+
+
+## Instructions
+
+For each significant change (new file, modified function, etc.), provide a structured verdict.
+
+Use this exact format for each change:
+
+### <file_path or file_path:function_name>
+VERDICT: PASS | CONCERN | BLOCK
+CORRECTNESS: VALID | QUESTIONABLE | BROKEN
+SPEC_COMPLIANCE: MEETS | PARTIAL | VIOLATES | N/A
+ISSUE_COMPLIANCE: ADDRESSES | PARTIAL | UNRELATED | N/A
+BELIEF_COMPLIANCE: CONSISTENT | VIOLATES | N/A
+TEST_COVERAGE: COVERED | PARTIAL | UNTESTED
+INTEGRATION: WIRED | PARTIAL | MISSING
+REASONING: <brief explanation of your assessment>
+---
+
+## Review Criteria
+
+1. **CORRECTNESS**: Does the code do what it claims? Is the logic sound?
+   - VALID: Logic is correct, no bugs apparent
+   - QUESTIONABLE: Logic may have edge cases or unclear behavior
+   - BROKEN: Clear bugs or incorrect behavior
+
+2. **SPEC_COMPLIANCE**: Does it meet MUST requirements from the spec?
+   - MEETS: All relevant spec requirements satisfied
+   - PARTIAL: Some requirements met, others missing or incomplete
+   - VIOLATES: Contradicts spec requirements
+   - N/A: No spec provided or not applicable
+
+3. **ISSUE_COMPLIANCE** (only when an issue is provided): Do the changes address the problem or feature described in the issue?
+   - ADDRESSES: Changes directly solve the issue's stated problem or implement the requested feature
+   - PARTIAL: Changes partially address the issue but leave some aspects unresolved
+   - UNRELATED: Changes do not appear related to the issue
+   - N/A: No issue provided
+
+4. **TEST_COVERAGE**: Are there tests for the new/changed code?
+   - COVERED: Tests exist and cover the changes
+   - PARTIAL: Some tests exist but coverage is incomplete
+   - UNTESTED: No tests for the changes
+
+5. **INTEGRATION**: Are callers updated? Is the feature usable end-to-end?
+   - WIRED: Feature is fully integrated and usable
+   - PARTIAL: Interface exists but callers not updated, or integration incomplete
+   - MISSING: No integration with existing code
+
+6. **BELIEF_COMPLIANCE** (only when beliefs are provided): Do the changes respect known architectural invariants, contracts, and rules?
+   - CONSISTENT: Changes align with or reinforce known beliefs
+   - VIOLATES: Changes contradict a specific belief — cite the belief ID
+   - N/A: No beliefs provided or no relevant beliefs apply
+
+## Verdict Guidelines
+
+- **BLOCK**: Security issues, broken functionality, spec violations, or missing critical integration
+- **CONCERN**: Missing tests, partial integration, questionable patterns, or unclear logic
+- **PASS**: Correct, tested, well-integrated code
+
+## Important
+
+- Full function bodies for modified functions may be available in the observations section — use them to verify the complete logic, not just the diff hunks
+- Related test files (prefixed with ``related_test:``) may be included in observations — check whether existing test assertions still match modified return types, signatures, or behavior. Flag any test that would break due to the changes
+- If duplicate test coverage is detected (multiple test files covering the same source), note it in your review
+- Focus on actual issues, not style preferences
+- If a method signature is added but callers aren't updated, that's PARTIAL integration
+- Be specific in reasoning - reference line numbers or function names
+- When in doubt, use CONCERN rather than PASS
+
+## Self-Review
+
+After completing your review, add a brief self-assessment:
+
+### SELF_REVIEW
+LIMITATIONS: <what context were you missing that affected review quality?>
+---
+
+Examples of limitations:
+- "Could not see full class to verify no other methods access the modified field"
+- "Test file not included in diff - cannot verify coverage claims"
+- "Spec file referenced but not provided"
+
+
+## Feature Requests
+
+If this review tool could be improved to help you do a better job, suggest features:
+
+### FEATURE_REQUESTS
+- <suggestion 1>
+- <suggestion 2>
+---
+
+Examples:
+- "Include full file context for modified functions, not just diff hunks"
+- "Show callers of modified methods to verify integration"
+- "Include test file alongside implementation changes"
+
+Only include this section if you have specific suggestions. Skip if none.

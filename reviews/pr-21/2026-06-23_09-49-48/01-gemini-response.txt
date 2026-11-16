@@ -1,0 +1,37 @@
+### ftl_code_expert/git_utils.py:list_source_files
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The function executes `git ls-files` and sorts the resulting list of files using `files.sort()`. This is a standard alphabetical (lexicographical) sort. However, the caller in `cli.py` explicitly states that the enumeration should follow BFS order (`BFS: breadth before depth`). Alphabetical sorting places deeper files (such as `a/b/c.py`) before shallower files (such as `g.py`) if they are alphabetically earlier, violating BFS ordering. To achieve true BFS ordering, the list should be sorted by depth (e.g. `files.sort(key=lambda p: (p.count(os.sep), p))`).
+Additionally, there are no unit tests in the repository to verify this utility or its filtering of binary extensions.
+---
+
+### ftl_code_expert/cli.py:scan
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The integration logic in the `scan` command is correct. It successfully resolves the repository path, retrieves tracked non-binary source files, maps them to `Topic` objects, and bulk-appends them to the queue via `add_topics` prior to enqueuing LLM-suggested topics. No issues were found in parameter mapping or type conversions. However, like the rest of the codebase, there is no automated test coverage to assert correctness.
+---
+
+### ftl_code_expert/cli.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The changes clean up inline imports of `Topic` from functions `walk_commits` and `research`, moving them to a single top-level import from `.topics`. This is idiomatic and clean. It does not introduce circular dependencies as `topics.py` does not import `cli.py` or depend on any of its exports.
+---
+
+### SELF_REVIEW
+LIMITATIONS: No specification (`SPEC.md`) or issue description was provided, so compliance with specific feature requests could not be evaluated.
+---

@@ -1,0 +1,47 @@
+### ftl_code_expert/cli.py:verify
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command is highly robust, clean, and idiomatic. It integrates flawlessly with the existing Click application group. It carefully handles and separates belief resolution strategies (by ID, gated/blocker status, category matching, negative-beliefs, or all IN beliefs) and prints helpful count summaries. It successfully employs async batching (`batch_size=10`) with `asyncio.run(_gather_confirmation_context(...))` to gather code contexts concurrently without triggering thread-safety or event-loop nesting errors, and cleanly manages prompt invocation and response parsing. The retraction logic correctly relies on `_has_reasons()` and executes a subprocess call to `reasons retract` with automatic state re-exporting (`_reasons_export()`).
+---
+
+### ftl_code_expert/cli.py:_parse_verify_response
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The regex pattern `r"\{.*\}"` with `re.DOTALL` correctly targets and extracts nested JSON maps from the LLM's response, even if wrapped in markdown formatting (e.g. ` ```json ` blocks). It is resilient to decoder failures and sanitizes keys/values to ensure they map strictly to expected dictionary shapes with uppercase verdicts (`CONFIRMED`, `STALE`, `INCONCLUSIVE`).
+---
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Standardized prompt template providing excellent framing, a clear instruction set, and a helpful schema example. Braces within the example block are double-escaped (`{{`, `}}`) so as not to conflict with Python's `.format(beliefs=...)` string interpolation.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Minimal and accurate module import/export modification adding `VERIFY_PROMPT` to both the local file import list and `__all__`.
+---
+
+### SELF_REVIEW
+LIMITATIONS: None. Comprehensive file-level structure, dependencies, call hierarchies, and project files list were successfully provided via previous observations, enabling a fully detailed review with absolute certainty. (Note that the repository has a test count of 0, explaining why test coverage is marked as UNTESTED across all modified units).
+---

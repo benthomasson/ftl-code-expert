@@ -1,0 +1,906 @@
+You are a senior code reviewer. Review the following code changes.
+
+## Specification
+
+No specification provided. Focus on correctness, tests, and integration.
+
+
+
+
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index a32ac21..97d34c9 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -33,6 +33,7 @@
+     PROPOSE_BELIEFS_CODE,
+     RESEARCH_INFER_FILES_PROMPT,
+     REVIEW_PROMPT,
++    VERIFY_PROMPT,
+     build_diff_prompt,
+     build_diff_summary_prompt,
+     build_file_prompt,
+@@ -3681,6 +3682,221 @@ def research(ctx, review_file, limit, dry_run):
+     click.echo("\nResearch complete. Run `code-expert derive` to attempt rejustification.", err=True)
+ 
+ 
++# --- verify ---
++
++
++def _parse_verify_response(response: str) -> dict[str, dict]:
++    """Parse LLM verify response into {id: {verdict, reason}} dict."""
++    m = re.search(r"\{.*\}", response, re.DOTALL)
++    if not m:
++        click.echo("  WARN: no JSON found in LLM response", err=True)
++        return {}
++    try:
++        data = json.loads(m.group(0))
++    except (json.JSONDecodeError, TypeError):
++        click.echo("  WARN: failed to parse JSON from LLM response", err=True)
++        return {}
++    results = {}
++    for k, v in data.items():
++        if not isinstance(v, dict) or "verdict" not in v:
++            continue
++        verdict = v["verdict"]
++        if not isinstance(verdict, str):
++            continue
++        results[k] = {
++            "verdict": verdict.upper(),
++            "reason": v.get("reason", ""),
++        }
++    return results
++
++
++@cli.command("verify")
++@click.argument("belief_ids", nargs=-1)
++@click.option("--category", default=None,
++              help="Verify IN beliefs matching keyword in ID or text")
++@click.option("--gated", is_flag=True, default=False,
++              help="Verify IN beliefs that actively gate downstream chains")
++@click.option("--negative", is_flag=True, default=False,
++              help="Verify negative IN beliefs (bugs, gaps, risks)")
++@click.option("--all", "verify_all", is_flag=True, default=False,
++              help="Verify all IN beliefs (expensive)")
++@click.option("--retract", is_flag=True, default=False,
++              help="Retract STALE beliefs via reasons")
++@click.option("--dry-run", is_flag=True, default=False,
++              help="Show what would be verified without calling LLM")
++@click.option("--batch-size", type=int, default=10,
++              help="Beliefs per LLM batch (default: 10)")
++@click.pass_context
++def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size):
++    """Check whether beliefs still hold against current source code.
++
++    Reads the current source code for each belief and asks an LLM whether
++    the claim is CONFIRMED, STALE, or INCONCLUSIVE.
++
++    Examples:
++        code-expert verify login-audit-always-success-info
++        code-expert verify --category auth
++        code-expert verify --gated
++        code-expert verify --negative --retract
++        code-expert verify --all --dry-run
++    """
++    from .caffeinate import hold as _caffeinate
++    _caffeinate()
++
++    model = ctx.obj["model"]
++    timeout = ctx.obj["timeout"]
++    repo_path = _get_repo(ctx)
++    abs_repo = os.path.abspath(repo_path)
++    project_dir = _get_project_dir(ctx)
++
++    if not check_model_available(model):
++        click.echo(f"Error: Model '{model}' CLI not available", err=True)
++        sys.exit(1)
++
++    # Load belief network
++    try:
++        network = _load_network()
++        nodes = network.get("nodes", {})
++    except Exception as e:
++        click.echo(f"Error loading belief network: {e}", err=True)
++        sys.exit(1)
++
++    if not nodes:
++        click.echo("No beliefs found. Run explorations and propose-beliefs first.")
++        return
++
++    # Select beliefs to verify
++    beliefs: list[dict] = []
++
++    if belief_ids:
++        for bid in belief_ids:
++            node = nodes.get(bid)
++            if node:
++                beliefs.append({"id": bid, "text": node.get("text", "")})
++            else:
++                click.echo(f"  Belief not found: {bid}", err=True)
++
++    elif gated:
++        gated_beliefs = _find_gated_out_beliefs(nodes)
++        blocker_ids = set()
++        for gb in gated_beliefs:
++            for blocker in gb.get("blockers", []):
++                blocker_ids.add(blocker["id"])
++        for bid in blocker_ids:
++            node = nodes.get(bid, {})
++            beliefs.append({"id": bid, "text": node.get("text", "")})
++        click.echo(f"Found {len(beliefs)} active blocker(s) gating {len(gated_beliefs)} downstream belief(s)", err=True)
++
++    elif negative:
++        beliefs = _get_negative_beliefs(nodes, model=model)
++        click.echo(f"Found {len(beliefs)} negative IN belief(s)", err=True)
++
++    elif category:
++        keyword = category.lower()
++        for nid, node in nodes.items():
++            if node.get("truth_value") != "IN":
++                continue
++            if keyword in nid.lower() or keyword in node.get("text", "").lower():
++                beliefs.append({"id": nid, "text": node.get("text", "")})
++        click.echo(f"Found {len(beliefs)} IN belief(s) matching '{category}'", err=True)
++
++    elif verify_all:
++        for nid, node in nodes.items():
++            if node.get("truth_value") == "IN":
++                beliefs.append({"id": nid, "text": node.get("text", "")})
++        click.echo(f"Found {len(beliefs)} IN belief(s) to verify", err=True)
++
++    else:
++        click.echo("Specify belief IDs, or use --category, --gated, --negative, or --all.", err=True)
++        sys.exit(1)
++
++    if not beliefs:
++        click.echo("No beliefs to verify.")
++        return
++
++    if dry_run:
++        click.echo(f"\n{len(beliefs)} belief(s) would be verified:", err=True)
++        for b in beliefs:
++            click.echo(f"  {b['id']}: {b['text'][:100]}", err=True)
++        click.echo("\n--dry-run: stopping before LLM verification.", err=True)
++        return
++
++    # Verify in batches
++    all_results: dict[str, dict] = {}
++    batches = [beliefs[i:i + batch_size] for i in range(0, len(beliefs), batch_size)]
++
++    for i, batch in enumerate(batches):
++        click.echo(f"\nVerifying batch {i + 1}/{len(batches)} ({len(batch)} beliefs)...", err=True)
++
++        contexts = asyncio.run(
++            _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
++        )
++
++        beliefs_section = []
++        for belief in batch:
++            ctx_text = contexts.get(belief["id"], "(no code context found)")
++            beliefs_section.append(
++                f"### `{belief['id']}`\n{belief['text']}\n\n"
++                f"**Code context:**\n{ctx_text}"
++            )
++
++        prompt = VERIFY_PROMPT.format(beliefs="\n\n---\n\n".join(beliefs_section))
++
++        try:
++            response = invoke_sync(prompt, model=model, timeout=timeout)
++            results = _parse_verify_response(response)
++            all_results.update(results)
++        except Exception as e:
++            click.echo(f"  Error: {e}", err=True)
++
++    # Report results
++    confirmed = []
++    stale = []
++    inconclusive = []
++
++    for belief in beliefs:
++        bid = belief["id"]
++        result = all_results.get(bid)
++        if not result:
++            inconclusive.append(bid)
++            click.echo(f"  {bid}: INCONCLUSIVE (no verdict returned)", err=True)
++            continue
++
++        verdict = result["verdict"]
++        reason = result.get("reason", "")
++
++        if verdict == "CONFIRMED":
++            confirmed.append(bid)
++            click.echo(f"  {bid}: CONFIRMED — {reason}", err=True)
++        elif verdict == "STALE":
++            stale.append(bid)
++            click.echo(f"  {bid}: STALE — {reason}", err=True)
++        else:
++            inconclusive.append(bid)
++            click.echo(f"  {bid}: INCONCLUSIVE — {reason}", err=True)
++
++    click.echo(f"\nResults: {len(confirmed)} confirmed, {len(stale)} stale, "
++               f"{len(inconclusive)} inconclusive", err=True)
++
++    # Retract stale beliefs
++    if retract and stale and _has_reasons():
++        click.echo(f"\nRetracting {len(stale)} stale belief(s)...", err=True)
++        for bid in stale:
++            reason = all_results.get(bid, {}).get("reason", "stale per verify")
++            result = subprocess.run(
++                ["reasons", "retract", bid, "--reason", reason],
++                capture_output=True, text=True,
++            )
++            if result.returncode == 0:
++                click.echo(f"  Retracted: {bid}", err=True)
++            else:
++                click.echo(f"  Failed to retract {bid}: {result.stderr.strip()}", err=True)
++        _reasons_export()
++        click.echo("Network updated.", err=True)
++    elif retract and stale:
++        click.echo("\nCannot retract: reasons CLI not available.", err=True)
++
++
+ # --- update ---
+ 
+ 
+diff --git a/ftl_code_expert/prompts/__init__.py b/ftl_code_expert/prompts/__init__.py
+index 258543b..b0feca3 100644
+--- a/ftl_code_expert/prompts/__init__.py
++++ b/ftl_code_expert/prompts/__init__.py
+@@ -9,6 +9,7 @@
+ from .propose import PROPOSE_BELIEFS_CODE
+ from .research import RESEARCH_INFER_FILES_PROMPT
+ from .review import REVIEW_PROMPT
++from .verify import VERIFY_PROMPT
+ from .repo import build_repo_prompt
+ from .scan import build_scan_prompt
+ from .spec import GENERATE_SPEC_PROMPT
+@@ -20,6 +21,7 @@
+     "PROPOSE_BELIEFS_CODE",
+     "RESEARCH_INFER_FILES_PROMPT",
+     "REVIEW_PROMPT",
++    "VERIFY_PROMPT",
+     "TOPICS_INSTRUCTIONS",
+     "build_diff_prompt",
+     "build_diff_summary_prompt",
+diff --git a/ftl_code_expert/prompts/verify.py b/ftl_code_expert/prompts/verify.py
+new file mode 100644
+index 0000000..ee72f3c
+--- /dev/null
++++ b/ftl_code_expert/prompts/verify.py
+@@ -0,0 +1,25 @@
++"""Prompt template for verifying belief staleness against current source code."""
++
++VERIFY_PROMPT = """\
++You are verifying whether beliefs about a codebase still hold by examining the current source code.
++
++For each belief below, I provide the belief text and relevant code context gathered from \
++the current state of the repository.
++
++Determine whether each belief is:
++- **CONFIRMED** — the current code still supports this claim
++- **STALE** — the code has changed and the belief no longer holds (explain what changed)
++- **INCONCLUSIVE** — the provided code context is insufficient to determine either way
++
++Return ONLY a JSON object mapping each belief ID to an object with "verdict" and "reason":
++
++Example:
++```json
++{{"belief-1": {{"verdict": "CONFIRMED", "reason": "The handler still enforces zero-arg construction"}}, \
++"belief-2": {{"verdict": "STALE", "reason": "LoginAttemptAuditHandler now covers failed logins with WARNING severity"}}, \
++"belief-3": {{"verdict": "INCONCLUSIVE", "reason": "The relevant middleware file was not in the provided context"}}}}
++```
++
++## Beliefs to Verify
++
++{beliefs}"""
+
+```
+
+## Observation Results
+
+You previously requested observations. Here are the results:
+
+```json
+{
+  "load_network_body": {
+    "function": "_load_network",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2706,
+    "end_line": 2719,
+    "source": "def _load_network() -> dict:\n    \"\"\"Load network.json (exported from reasons).\"\"\"\n    network_path = Path(\"network.json\")\n    if not network_path.exists():\n        # Try exporting from reasons\n        if _has_reasons():\n            import subprocess\n            result = subprocess.run(\n                [\"reasons\", \"export\"], capture_output=True, text=True,\n            )\n            if result.returncode == 0:\n                return json.loads(result.stdout)\n        return {\"nodes\": {}}\n    return json.loads(network_path.read_text())"
+  },
+  "find_gated_out_beliefs_body": {
+    "function": "_find_gated_out_beliefs",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3330,
+    "end_line": 3355,
+    "source": "def _find_gated_out_beliefs(nodes: dict) -> list[dict]:\n    \"\"\"Find gated OUT beliefs and their active blockers.\"\"\"\n    results = []\n    for nid, node in nodes.items():\n        if node.get(\"truth_value\") != \"OUT\":\n            continue\n        if node.get(\"metadata\", {}).get(\"superseded_by\"):\n            continue\n        for j in node.get(\"justifications\", []):\n            if not j.get(\"outlist\"):\n                continue\n            active_blockers = [\n                oid for oid in j[\"outlist\"]\n                if oid in nodes and nodes[oid].get(\"truth_value\") == \"IN\"\n            ]\n            if active_blockers:\n                results.append({\n                    \"id\": nid,\n                    \"text\": node.get(\"text\", \"\"),\n                    \"blockers\": [\n                        {\"id\": bid, \"text\": nodes[bid].get(\"text\", \"\")}\n                        for bid in active_blockers\n                    ],\n                })\n                break\n    return results"
+  },
+  "get_negative_beliefs_body": {
+    "function": "_get_negative_beliefs",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3370,
+    "end_line": 3384,
+    "source": "def _get_negative_beliefs(nodes: dict, model: str = \"claude\") -> list[dict]:\n    \"\"\"Get negative IN beliefs, preferring reasons list-negative when available.\"\"\"\n    if _has_reasons():\n        result = subprocess.run(\n            [\"reasons\", \"list-negative\", \"-m\", model],\n            capture_output=True, text=True,\n        )\n        if result.returncode == 0:\n            beliefs = []\n            for line in result.stdout.splitlines():\n                m = re.match(r\"\\s*\\[-\\]\\s+([\\w-]+):\\s+(.+)\", line)\n                if m:\n                    beliefs.append({\"id\": m.group(1), \"text\": m.group(2)})\n            return beliefs\n    return _find_negative_in_beliefs(nodes)"
+  },
+  "gather_confirmation_context_body": {
+    "function": "_gather_confirmation_context",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3033,
+    "end_line": 3051,
+    "source": "async def _gather_confirmation_context(\n    beliefs: list[dict],\n    nodes: dict,\n    repo_path: str,\n    project_dir: str | None = None,\n) -> dict[str, str]:\n    \"\"\"Gather code context for confirming whether beliefs still hold.\"\"\"\n    tasks = [\n        _gather_belief_context(b, nodes, repo_path, project_dir)\n        for b in beliefs\n    ]\n    results = await asyncio.gather(*tasks, return_exceptions=True)\n    contexts: dict[str, str] = {}\n    for i, result in enumerate(results):\n        if isinstance(result, Exception):\n            contexts[beliefs[i][\"id\"]] = \"(error gathering context)\"\n        else:\n            contexts[result[0]] = result[1]\n    return contexts"
+  },
+  "invoke_sync_body": {
+    "error": "No function found at 'invoke_sync'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "invoke_sync_raises": {
+    "function": "invoke_sync",
+    "file": "ftl_code_expert/cli.py",
+    "explicit_raises": [],
+    "calls": [],
+    "error": "Function 'invoke_sync' not found"
+  },
+  "has_reasons_body": {
+    "function": "_has_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 155,
+    "end_line": 157,
+    "source": "def _has_reasons() -> bool:\n    \"\"\"Check if ftl-reasons CLI is available.\"\"\"\n    return shutil.which(\"reasons\") is not None"
+  },
+  "reasons_export_body": {
+    "function": "_reasons_export",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2200,
+    "end_line": 2219,
+    "source": "def _reasons_export():\n    \"\"\"Re-export beliefs.md and network.json from reasons after adding beliefs.\"\"\"\n    beliefs_path = Path(\"beliefs.md\")\n    network_path = Path(\"network.json\")\n\n    result = subprocess.run(\n        [\"reasons\", \"export-markdown\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        beliefs_path.write_text(result.stdout)\n        click.echo(f\"Updated {beliefs_path}\")\n\n    result = subprocess.run(\n        [\"reasons\", \"export\"],\n        capture_output=True, text=True,\n    )\n    if result.returncode == 0:\n        network_path.write_text(result.stdout)\n        click.echo(f\"Updated {network_path}\")"
+  },
+  "cli_imports": {
+    "file": "ftl_code_expert/cli.py",
+    "imports": [
+      "asyncio",
+      "json",
+      "os",
+      "re",
+      "shutil",
+      "subprocess",
+      "sys",
+      "click"
+    ],
+    "from_imports": [
+      {
+        "module": "datetime",
+        "names": [
+          "date",
+          "datetime"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "git_utils",
+        "names": [
+          "commits_since_checkpoint",
+          "extract_symbol",
+          "find_related_tests",
+          "get_commit_log",
+          "get_diff",
+          "get_diff_since",
+          "get_diff_since_commit",
+          "get_file_content",
+          "get_imports",
+          "get_repo_structure",
+          "list_commits_with_files",
+          "load_diff_checkpoint",
+          "save_diff_checkpoint"
+        ]
+      },
+      {
+        "module": "llm",
+        "names": [
+          "check_model_available",
+          "invoke",
+          "invoke_concurrent",
+          "invoke_concurrent_sync",
+          "invoke_sync"
+        ]
+      },
+      {
+        "module": "observations",
+        "names": [
+          "parse_observation_requests",
+          "run_observations"
+        ]
+      },
+      {
+        "module": "prompts",
+        "names": [
+          "PROPOSE_BELIEFS_CODE",
+          "RESEARCH_INFER_FILES_PROMPT",
+          "REVIEW_PROMPT",
+          "VERIFY_PROMPT",
+          "build_diff_prompt",
+          "build_diff_summary_prompt",
+          "build_file_prompt",
+          "build_function_prompt",
+          "build_observe_prompt",
+          "build_repo_prompt",
+          "build_scan_prompt"
+        ]
+      },
+      {
+        "module": "topics",
+        "names": [
+          "add_topics",
+          "load_queue",
+          "parse_topics_from_response",
+          "pending_count",
+          "pop_at",
+          "pop_batch",
+          "pop_multiple",
+          "pop_next",
+          "skip_topic"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"Command-line interface for code expert.\"\"\"\n\nimport asyncio\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nfrom datetime import date, datetime\nfrom pathlib import Path\n\nimport click\n\nfrom .git_utils import (\n    commits_since_checkpoint,\n    extract_symbol,\n    find_related_tests,\n    get_commit_log,\n    get_diff,\n    get_diff_since,\n    get_diff_since_commit,\n    get_file_content,\n    get_imports,\n    get_repo_structure,\n    list_commits_with_files,\n    load_diff_checkpoint,\n    save_diff_checkpoint,\n)\nfrom .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync\nfrom .observations import parse_observation_requests, run_observations\nfrom .prompts import (\n    PROPOSE_BELIEFS_CODE,\n    RESEARCH_INFER_FILES_PROMPT,\n    REVIEW_PROMPT,\n    VERIFY_PROMPT,\n    build_diff_prompt,\n    build_diff_summary_prompt,\n    build_file_prompt,\n    build_function_prompt,\n    build_observe_prompt,\n    build_repo_prompt,\n    build_scan_prompt,\n)\nfrom .topics import (\n    add_topics,\n    load_queue,\n    parse_topics_from_response,\n    pending_count,\n    pop_at,\n    pop_batch,\n    pop_multiple,\n    pop_next,\n    skip_topic,\n)\n\nPROJECT_DIR = \".code-expert\"\n\n\n# --- Config helpers ---\n\n\ndef _load_config() -> dict | None:\n    \"\"\"Load .code-expert/config.json if it exists.\"\"\""
+  },
+  "verify_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "asyncio_run_usages": {
+    "symbol": "asyncio.run",
+    "usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/huggingface_hub/inference/_mcp/cli.py",
+        "line": 245,
+        "text": "asyncio.run(run_agent(path))"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/fsspec/asyn.py",
+        "line": 88,
+        "text": "asyncio.run_coroutine_threadsafe(_runner(event, coro, result, timeout), loop)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/fsspec/implementations/http.py",
+        "line": 786,
+        "text": "asyncio.run_coroutine_threadsafe(self._close(), self.loop)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_arrayprint.py",
+        "line": 1315,
+        "text": "asyncio.run(main())"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_errstate.py",
+        "line": 127,
+        "text": "asyncio.run(main())"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_mem_policy.py",
+        "line": 349,
+        "text": "asyncio.run(async_test_context_locality(get_module))"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 278,
+        "text": "\"message\": \"unhandled exception during asyncio.run() shutdown\","
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 1157,
+        "text": "NOTE: this only works when the event loop was started using asyncio.run() or"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 2547,
+        "text": "asyncio.run_coroutine_threadsafe, task_wrapper(), loop=loop"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 46,
+        "text": ".. |asyncio.run| replace:: :func:`asyncio.run()`"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 1080,
+        "text": "|asyncio.run| or |loop.run_until_complete| to ensure all asynchronous logging messages are"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 1103,
+        "text": ">>> asyncio.run(work())"
+      },
+      {
+        "file": "ftl_code_expert/llm.py",
+        "line": 75,
+        "text": "return asyncio.run(invoke(prompt, model, timeout))"
+      },
+      {
+        "file": "ftl_code_expert/llm.py",
+        "line": 108,
+        "text": "return asyncio.run(invoke_concurrent(prompts, model, timeout, max_concurrent))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 357,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 427,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 487,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 539,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 632,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 774,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 848,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1022,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1037,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1052,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1067,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1129,
+        "text": "result, entry_name, entry_title, source = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1366,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2528,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2688,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3085,
+        "text": "contexts = asyncio.run("
+      }
+    ],
+    "production_usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/huggingface_hub/inference/_mcp/cli.py",
+        "line": 245,
+        "text": "asyncio.run(run_agent(path))"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/fsspec/asyn.py",
+        "line": 88,
+        "text": "asyncio.run_coroutine_threadsafe(_runner(event, coro, result, timeout), loop)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/fsspec/implementations/http.py",
+        "line": 786,
+        "text": "asyncio.run_coroutine_threadsafe(self._close(), self.loop)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 278,
+        "text": "\"message\": \"unhandled exception during asyncio.run() shutdown\","
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 1157,
+        "text": "NOTE: this only works when the event loop was started using asyncio.run() or"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/anyio/_backends/_asyncio.py",
+        "line": 2547,
+        "text": "asyncio.run_coroutine_threadsafe, task_wrapper(), loop=loop"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 46,
+        "text": ".. |asyncio.run| replace:: :func:`asyncio.run()`"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 1080,
+        "text": "|asyncio.run| or |loop.run_until_complete| to ensure all asynchronous logging messages are"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/loguru/_logger.py",
+        "line": 1103,
+        "text": ">>> asyncio.run(work())"
+      },
+      {
+        "file": "ftl_code_expert/llm.py",
+        "line": 75,
+        "text": "return asyncio.run(invoke(prompt, model, timeout))"
+      },
+      {
+        "file": "ftl_code_expert/llm.py",
+        "line": 108,
+        "text": "return asyncio.run(invoke_concurrent(prompts, model, timeout, max_concurrent))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 357,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 427,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 487,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 539,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 632,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 774,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 848,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1022,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1037,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1052,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1067,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1129,
+        "text": "result, entry_name, entry_title, source = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1366,
+        "text": "results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2528,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2688,
+        "text": "result = asyncio.run(invoke(prompt, model, timeout=timeout))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3085,
+        "text": "contexts = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3654,
+        "text": "batch_results = asyncio.run("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3831,
+        "text": "contexts = asyncio.run("
+      }
+    ],
+    "test_usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_arrayprint.py",
+        "line": 1315,
+        "text": "asyncio.run(main())"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_errstate.py",
+        "line": 127,
+        "text": "asyncio.run(main())"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/numpy/_core/tests/test_mem_policy.py",
+        "line": 349,
+        "text": "asyncio.run(async_test_context_locality(get_module))"
+      }
+    ],
+    "production_count": 29,
+    "test_count": 3,
+    "total_count": 32
+  },
+  "parse_verify_callers": {
+    "symbol": "_parse_verify_response",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3688,
+        "text": "def _parse_verify_response(response: str) -> dict[str, dict]:",
+        "context_function": "research",
+        "context_snippet": "   3685: # --- verify ---\n   3686: \n   3687: \n>> 3688: def _parse_verify_response(response: str) -> dict[str, dict]:\n   3689:     \"\"\"Parse LLM verify response into {id: {verdict, reason}} dict.\"\"\"\n   3690:     m = re.search(r\"\\{.*\\}\", response, re.DOTALL)\n   3691:     if not m:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3847,
+        "text": "results = _parse_verify_response(response)",
+        "context_function": "verify",
+        "context_snippet": "   3844: \n   3845:         try:\n   3846:             response = invoke_sync(prompt, model=model, timeout=timeout)\n>> 3847:             results = _parse_verify_response(response)\n   3848:             all_results.update(results)\n   3849:         except Exception as e:\n   3850:             click.echo(f\"  Error: {e}\", err=True)"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  }
+}
+```
+
+Use these results to inform your review. Do not request the same observations again.
+
+
+## Instructions
+
+For each significant change (new file, modified function, etc.), provide a structured verdict.
+
+Use this exact format for each change:
+
+### <file_path or file_path:function_name>
+VERDICT: PASS | CONCERN | BLOCK
+CORRECTNESS: VALID | QUESTIONABLE | BROKEN
+SPEC_COMPLIANCE: MEETS | PARTIAL | VIOLATES | N/A
+ISSUE_COMPLIANCE: ADDRESSES | PARTIAL | UNRELATED | N/A
+BELIEF_COMPLIANCE: CONSISTENT | VIOLATES | N/A
+TEST_COVERAGE: COVERED | PARTIAL | UNTESTED
+INTEGRATION: WIRED | PARTIAL | MISSING
+REASONING: <brief explanation of your assessment>
+---
+
+## Review Criteria
+
+1. **CORRECTNESS**: Does the code do what it claims? Is the logic sound?
+   - VALID: Logic is correct, no bugs apparent
+   - QUESTIONABLE: Logic may have edge cases or unclear behavior
+   - BROKEN: Clear bugs or incorrect behavior
+
+2. **SPEC_COMPLIANCE**: Does it meet MUST requirements from the spec?
+   - MEETS: All relevant spec requirements satisfied
+   - PARTIAL: Some requirements met, others missing or incomplete
+   - VIOLATES: Contradicts spec requirements
+   - N/A: No spec provided or not applicable
+
+3. **ISSUE_COMPLIANCE** (only when an issue is provided): Do the changes address the problem or feature described in the issue?
+   - ADDRESSES: Changes directly solve the issue's stated problem or implement the requested feature
+   - PARTIAL: Changes partially address the issue but leave some aspects unresolved
+   - UNRELATED: Changes do not appear related to the issue
+   - N/A: No issue provided
+
+4. **TEST_COVERAGE**: Are there tests for the new/changed code?
+   - COVERED: Tests exist and cover the changes
+   - PARTIAL: Some tests exist but coverage is incomplete
+   - UNTESTED: No tests for the changes
+
+5. **INTEGRATION**: Are callers updated? Is the feature usable end-to-end?
+   - WIRED: Feature is fully integrated and usable
+   - PARTIAL: Interface exists but callers not updated, or integration incomplete
+   - MISSING: No integration with existing code
+
+6. **BELIEF_COMPLIANCE** (only when beliefs are provided): Do the changes respect known architectural invariants, contracts, and rules?
+   - CONSISTENT: Changes align with or reinforce known beliefs
+   - VIOLATES: Changes contradict a specific belief — cite the belief ID
+   - N/A: No beliefs provided or no relevant beliefs apply
+
+## Verdict Guidelines
+
+- **BLOCK**: Security issues, broken functionality, spec violations, or missing critical integration
+- **CONCERN**: Missing tests, partial integration, questionable patterns, or unclear logic
+- **PASS**: Correct, tested, well-integrated code
+
+## Important
+
+- Full function bodies for modified functions may be available in the observations section — use them to verify the complete logic, not just the diff hunks
+- Related test files (prefixed with ``related_test:``) may be included in observations — check whether existing test assertions still match modified return types, signatures, or behavior. Flag any test that would break due to the changes
+- If duplicate test coverage is detected (multiple test files covering the same source), note it in your review
+- Focus on actual issues, not style preferences
+- If a method signature is added but callers aren't updated, that's PARTIAL integration
+- Be specific in reasoning - reference line numbers or function names
+- When in doubt, use CONCERN rather than PASS
+
+## Self-Review
+
+After completing your review, add a brief self-assessment:
+
+### SELF_REVIEW
+LIMITATIONS: <what context were you missing that affected review quality?>
+---
+
+Examples of limitations:
+- "Could not see full class to verify no other methods access the modified field"
+- "Test file not included in diff - cannot verify coverage claims"
+- "Spec file referenced but not provided"
+
+
+## Feature Requests
+
+If this review tool could be improved to help you do a better job, suggest features:
+
+### FEATURE_REQUESTS
+- <suggestion 1>
+- <suggestion 2>
+---
+
+Examples:
+- "Include full file context for modified functions, not just diff hunks"
+- "Show callers of modified methods to verify integration"
+- "Include test file alongside implementation changes"
+
+Only include this section if you have specific suggestions. Skip if none.

@@ -1,0 +1,343 @@
+{
+  "verify_belief_full": {
+    "function": "_verify_belief_with_observations",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3129,
+    "end_line": 3214,
+    "source": "async def _verify_belief_with_observations(\n    belief: dict,\n    node: dict,\n    repo_path: str,\n    project_dir: str | None,\n    model: str,\n    timeout: int,\n) -> tuple[str, str]:\n    \"\"\"Gather code context for a belief using the observe pattern.\n\n    1. Auto-gather: read source file + find_usages/grep for key symbols\n    2. Ask LLM what additional observations it needs\n    3. Execute LLM-requested observations in parallel\n    4. Return combined context\n    \"\"\"\n    bid = belief[\"id\"]\n\n    src_file, auto_obs = await _auto_gather_verify_observations(\n        belief, node, repo_path, project_dir,\n    )\n\n    tree = get_repo_structure(repo_path, max_depth=3)\n\n    if src_file is None:\n        try:\n            infer_prompt = VERIFY_INFER_FILE_PROMPT.format(\n                belief_id=bid,\n                belief_text=belief[\"text\"],\n                repo_tree=tree,\n            )\n            infer_response = await invoke(infer_prompt, model, timeout=timeout)\n            inferred = _parse_inferred_files(infer_response)\n            if inferred:\n                candidate = inferred[0]\n                if not os.path.isabs(candidate) and \"..\" not in candidate.split(\"/\"):\n                    abs_candidate = os.path.join(repo_path, candidate)\n                    if os.path.isfile(abs_candidate):\n                        src_file = candidate\n                        from .observations import read_file\n                        file_result = await read_file(src_file, repo_path, max_lines=500)\n                        auto_obs[f\"source_file:{src_file}\"] = file_result\n                        click.echo(f\"  Inferred source file for {bid}: {src_file}\", err=True)\n                        if _has_reasons() and Path(\"reasons.db\").exists():\n                            try:\n                                from reasons_lib.api import set_metadata\n                                set_metadata(bid, \"source_file\", src_file)\n                            except Exception:\n                                pass\n        except Exception:\n            pass\n\n    seed_context = \"\"\n    source_key = f\"source_file:{src_file}\" if src_file else None\n    if source_key and source_key in auto_obs:\n        file_result = auto_obs[source_key]\n        if \"content\" in file_result:\n            content = file_result[\"content\"]\n            if len(content) > 4000:\n                content = content[:4000] + \"\\n... (truncated)\"\n            seed_context = f\"### {src_file}\\n```\\n{content}\\n```\"\n    observe_prompt = VERIFY_OBSERVE_PROMPT.format(\n        belief_id=bid,\n        belief_text=belief[\"text\"],\n        seed_context=seed_context or \"(no initial source file)\",\n        tree=tree,\n    )\n    observe_response = await invoke(observe_prompt, model, timeout=timeout)\n    requested_obs = parse_observation_requests(observe_response)\n\n    llm_obs = {}\n    if requested_obs:\n        llm_obs = await run_observations(requested_obs, repo_path)\n\n    all_obs = {**auto_obs, **llm_obs}\n\n    context_parts: list[str] = []\n    if seed_context:\n        context_parts.append(seed_context)\n    if all_obs:\n        display_obs = {k: v for k, v in all_obs.items() if k != source_key}\n        if display_obs:\n            context_parts.append(\n                f\"## Observations\\n\\n```json\\n{json.dumps(display_obs, indent=2, default=str)}\\n```\"\n            )\n\n    return bid, \"\\n\\n\".join(context_parts) if context_parts else \"(no code context found)\""
+  },
+  "parse_inferred_files_body": {
+    "function": "_parse_inferred_files",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3700,
+    "end_line": 3709,
+    "source": "def _parse_inferred_files(response: str) -> list[str]:\n    \"\"\"Extract JSON array of file paths from LLM response.\"\"\"\n    for m in re.finditer(r\"\\[.*?\\]\", response, re.DOTALL):\n        try:\n            files = json.loads(m.group(0))\n            if isinstance(files, list) and all(isinstance(f, str) for f in files):\n                return files\n        except json.JSONDecodeError:\n            continue\n    return []"
+  },
+  "invoke_raises": {
+    "function": "invoke",
+    "file": "ftl_code_expert/cli.py",
+    "explicit_raises": [],
+    "calls": [],
+    "error": "Function 'invoke' not found"
+  },
+  "invoke_concurrent_sync_body": {
+    "error": "No function found at 'invoke_concurrent_sync'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "read_file_body": {
+    "function": "read_file",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 64,
+    "end_line": 96,
+    "source": "async def read_file(file_path: str, repo_path: str, start_line: int = 0, max_lines: int = 200) -> dict[str, Any]:\n    \"\"\"\n    Read a file's contents.\n\n    Args:\n        file_path: Path to the file (relative to repo)\n        repo_path: Repository root\n        start_line: Starting line (0-indexed)\n        max_lines: Maximum lines to return\n\n    Returns:\n        Dict with file content and metadata\n    \"\"\"\n    try:\n        full_path = Path(repo_path) / file_path\n        if not full_path.is_file():\n            return {\"error\": f\"File not found: {file_path}\", \"file\": file_path}\n\n        content = full_path.read_text(encoding=\"utf-8\")\n        lines = content.split(\"\\n\")\n        total_lines = len(lines)\n\n        selected = lines[start_line:start_line + max_lines]\n\n        return {\n            \"file\": file_path,\n            \"total_lines\": total_lines,\n            \"start_line\": start_line,\n            \"lines_returned\": len(selected),\n            \"content\": \"\\n\".join(selected),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"file\": file_path}"
+  },
+  "extract_source_file_body": {
+    "function": "_extract_source_file",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3000,
+    "end_line": 3012,
+    "source": "def _extract_source_file(entry_path: str, project_dir: str | None = None) -> str | None:\n    \"\"\"Extract source file path from an entry's header line (# File: ...).\"\"\"\n    base = project_dir or \".\"\n    full_path = Path(base) / entry_path\n    if not full_path.is_file():\n        return None\n    try:\n        for line in full_path.read_text().splitlines()[:5]:\n            if line.startswith(\"# File: \"):\n                return line[8:].strip()\n    except OSError:\n        pass\n    return None"
+  },
+  "get_repo_structure_body": {
+    "error": "No function found at 'get_repo_structure'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "has_reasons_body": {
+    "function": "_has_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 159,
+    "end_line": 161,
+    "source": "def _has_reasons() -> bool:\n    \"\"\"Check if ftl-reasons CLI is available.\"\"\"\n    return shutil.which(\"reasons\") is not None"
+  },
+  "set_metadata_callers": {
+    "symbol": "set_metadata",
+    "usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 438,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"search_and_link\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 457,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"softened\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 469,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"abandoned\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 476,
+        "text": "api.set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 481,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"research\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/pg.py",
+        "line": 1521,
+        "text": "def set_metadata(self, node_id, key, value):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 838,
+        "text": "def set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 847,
+        "text": "return _pg_dispatch(pg_conninfo, project_id, \"set_metadata\","
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 3217,
+        "text": "set_metadata(nid, \"repair_action\", \"rewritten\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 3226,
+        "text": "set_metadata(nid, \"repair_action\", \"retracted\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 397,
+        "text": "def cmd_set_metadata(args):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 399,
+        "text": "result = api.set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 2925,
+        "text": "\"set-metadata\": cmd_set_metadata,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3173,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3174,
+        "text": "set_metadata(bid, \"source_file\", src_file)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4111,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4116,
+        "text": "set_metadata(bid, \"verified_at\", now)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4241,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4261,
+        "text": "set_metadata(bid, \"source_file\", candidate)"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 438,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"search_and_link\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 457,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"softened\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 469,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"abandoned\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 476,
+        "text": "api.set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/repair.py",
+        "line": 481,
+        "text": "api.set_metadata(belief_id, \"repair_action\", \"research\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/pg.py",
+        "line": 1521,
+        "text": "def set_metadata(self, node_id, key, value):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 838,
+        "text": "def set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 847,
+        "text": "return _pg_dispatch(pg_conninfo, project_id, \"set_metadata\","
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 3217,
+        "text": "set_metadata(nid, \"repair_action\", \"rewritten\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/api.py",
+        "line": 3226,
+        "text": "set_metadata(nid, \"repair_action\", \"retracted\", db_path=db_path)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 397,
+        "text": "def cmd_set_metadata(args):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 399,
+        "text": "result = api.set_metadata("
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/reasons/cli.py",
+        "line": 2925,
+        "text": "\"set-metadata\": cmd_set_metadata,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3173,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3174,
+        "text": "set_metadata(bid, \"source_file\", src_file)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4111,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4116,
+        "text": "set_metadata(bid, \"verified_at\", now)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4241,
+        "text": "from reasons_lib.api import set_metadata"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4261,
+        "text": "set_metadata(bid, \"source_file\", candidate)"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 19,
+    "test_count": 0,
+    "total_count": 19
+  },
+  "infer_sources_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "project_deps": {
+    "repo": ".",
+    "pyproject_toml": "[project]\nname = \"ftl-code-expert\"\nversion = \"0.8.0\"\ndescription = \"Build expert knowledge bases from codebases\"\nreadme = \"README.md\"\nrequires-python = \">=3.12\"\ndependencies = [\"click>=8.0\", \"ftl-reasons>=0.48.0\"]\n\n[project.optional-dependencies]\nembeddings = [\"fastembed>=0.7.4\", \"numpy\"]\n\n[project.scripts]\ncode-expert = \"ftl_code_expert.cli:cli\"\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n\n[tool.hatch.build.targets.wheel]\npackages = [\"ftl_code_expert\"]\n\n[dependency-groups]\ndev = []\n",
+    "dependencies": [
+      "click>=8.0",
+      "ftl-reasons>=0.48.0"
+    ],
+    "optional_dependencies": {
+      "embeddings": [
+        "fastembed>=0.7.4",
+        "numpy"
+      ]
+    }
+  },
+  "verify_infer_prompt_usages": {
+    "symbol": "VERIFY_INFER_FILE_PROMPT",
+    "usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 37,
+        "text": "VERIFY_INFER_FILE_PROMPT,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3154,
+        "text": "infer_prompt = VERIFY_INFER_FILE_PROMPT.format("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4230,
+        "text": "VERIFY_INFER_FILE_PROMPT.format("
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 12,
+        "text": "from .verify import VERIFY_INFER_FILE_PROMPT, VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT"
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 24,
+        "text": "\"VERIFY_INFER_FILE_PROMPT\","
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 88,
+        "text": "VERIFY_INFER_FILE_PROMPT = \"\"\"\\"
+      }
+    ],
+    "production_usages": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 37,
+        "text": "VERIFY_INFER_FILE_PROMPT,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3154,
+        "text": "infer_prompt = VERIFY_INFER_FILE_PROMPT.format("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4230,
+        "text": "VERIFY_INFER_FILE_PROMPT.format("
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 12,
+        "text": "from .verify import VERIFY_INFER_FILE_PROMPT, VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT"
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 24,
+        "text": "\"VERIFY_INFER_FILE_PROMPT\","
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 88,
+        "text": "VERIFY_INFER_FILE_PROMPT = \"\"\"\\"
+      }
+    ],
+    "test_usages": [],
+    "production_count": 6,
+    "test_count": 0,
+    "total_count": 6
+  }
+}

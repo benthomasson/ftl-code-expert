@@ -1,0 +1,93 @@
+## Code Review
+
+### ftl_code_expert/cli.py:_reasons_export
+VERDICT: BLOCK
+CORRECTNESS: BROKEN
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: MISSING
+REASONING: The line `network_path.write_text(result.stdout)` was deleted but the `click.echo(f"Updated {network_path}")` message was kept. This means `_reasons_export()` no longer writes `network.json` to disk, yet prints a lie saying it did. The verify command adds a call to `_reasons_export()` specifically to "ensure fresh metadata (fixes stale network.json)" — but the export no longer writes that file. `_load_network()` reads from `network.json` on disk, so verify will read stale data. This is a clear regression that undermines the stated purpose of the re-export.
+
+---
+
+### ftl_code_expert/cli.py:_verify_belief_with_observations
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Logic is mostly sound — seeds with source file, asks LLM for observations, runs them, returns combined context. Two issues: (1) `timeout` parameter is accepted but never used (dead parameter carried from the caller signature). (2) The function calls `invoke(observe_prompt, model)` without any timeout or error handling around the LLM call itself — if the model returns malformed JSON, `parse_observation_requests` returns `[]` which is handled gracefully, but a network error would propagate as an unhandled exception (caught only by `asyncio.gather(return_exceptions=True)` in the parent). This is acceptable but worth noting.
+
+---
+
+### ftl_code_expert/cli.py:_gather_verify_contexts
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Mirrors the existing `_gather_confirmation_context` pattern correctly. Exceptions are caught via `asyncio.gather(return_exceptions=True)` and logged to stderr with `click.echo(..., err=True)` — an improvement over the original which silently swallowed errors. The `timeout` parameter is threaded through but ultimately unused in the callee (see above).
+
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The `--no-observe` flag and branching logic are clean. The default behavior change (observation-based is now default, simple read is opt-in) is a significant UX change — each belief now costs an extra LLM call for observation planning, roughly doubling cost. The re-export call at line 3850 is good in intent but broken in practice due to the `_reasons_export` bug above. The `_load_network()` fallback (reading from `reasons export` stdout directly if `network.json` doesn't exist) partially masks the bug — if `network.json` was previously deleted, `_load_network` would call `reasons export` directly. But if `network.json` exists and is stale, the stale version is used.
+
+---
+
+### ftl_code_expert/prompts/verify.py:VERIFY_OBSERVE_PROMPT
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Well-structured prompt. Provides clear instructions, available tools table, output format, and practical guidelines (3-8 observations). The format placeholders (`belief_id`, `belief_text`, `seed_context`, `tree`) match the `.format()` call in `_verify_belief_with_observations`. The double-brace escaping for JSON template is correct.
+
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean addition of `VERIFY_OBSERVE_PROMPT` to imports and `__all__`. Alphabetical ordering maintained.
+
+---
+
+## Summary
+
+**1 blocker**: `_reasons_export()` no longer writes `network.json` — this is almost certainly an accidental deletion. The verify command's re-export is defeated, and users see a misleading "Updated network.json" message.
+
+**Key concerns**: No tests for any of the new async functions. The `timeout` parameter is threaded through 3 function signatures but never used. The default behavior change (observation loop is now default) has cost implications that aren't documented in the CLI help beyond the `--no-observe` flag description.
+
+**Observation system test coverage note**: The related tests found by the observation tool (sympy test_arit.py, test_expand.py, etc.) are false positives — they match on the symbol `verify` from `sympy.core.random.verify_numerically`, not the `verify` command under review. There are no actual tests for this feature.
+
+### SELF_REVIEW
+LIMITATIONS: Could not see the full `_gather_belief_context` function to compare behavior with the new `_verify_belief_with_observations`. Could not verify whether other callers of `_reasons_export` depend on `network.json` being written. Could not see the test directory structure to confirm whether tests truly don't exist or were just not found by the observation tool.
+
+---
+
+### FEATURE_REQUESTS
+- Filter out test files from `.venv/` or other dependency directories — false-positive "related tests" from sympy wasted observation budget and added noise
+- Show the project's actual test directory structure and any test files matching the modified module names
+- Include a "callers of modified functions" observation to verify integration impact (e.g., all callers of `_reasons_export`)
+
+---

@@ -1,0 +1,88 @@
+I have reviewed the changes to `ftl-code-expert`. The implementation introduces a more robust issue-filing pipeline by including negative beliefs (bugs/risks) and an LLM-based confirmation step to ensure issues are still relevant in the current codebase.
+
+### ftl_code_expert/cli.py:_build_negative_issue_body
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: MEETS
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Simple and correct template for formatting negative belief issues.
+---
+
+### ftl_code_expert/cli.py:_extract_source_file
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Correctly extracts the source file path from entry headers using a standard project heuristic (first 5 lines).
+---
+
+### ftl_code_expert/cli.py:_gather_confirmation_context
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The function is `async` but performs I/O operations (read_file, grep) sequentially within loops. This is a missed opportunity for parallelism which could significantly slow down the confirmation process for larger batches. Additionally, `grep` defaults to `*.py` in `observations.py`, which might miss context for beliefs associated with non-Python files.
+---
+
+### ftl_code_expert/cli.py:_confirm_beliefs
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Implements a sound batching and confirmation strategy. The error handling is conservative, including all issues in a batch if the LLM invocation fails, ensuring no potential issues are lost due to transient failures.
+---
+
+### ftl_code_expert/cli.py:file_issues
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: MEETS
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command logic is well-structured to handle both gated blockers and negative beliefs. The integration of the confirmation step and the new flags (`--skip-confirm`, `--no-negative`) is correct. It properly deduplicates against existing issues before filing.
+---
+
+### ftl_code_expert/cli.py:_get_negative_beliefs
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Good fallback strategy: prefers the specialized `reasons list-negative` command if available, falling back to a keyword-based search on IN beliefs.
+---
+
+### README.md & ftl_code_expert/data/SKILL.md
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: MEETS
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: Documentation correctly reflects the new functionality and command-line options.
+---
+
+### SELF_REVIEW
+LIMITATIONS: No test files were included in the codebase, so I could not verify if existing tests would break or create new ones. I had to rely on static analysis of the provided diff and surrounding context. I also assumed the output format of the `reasons` CLI matches the regex used in `_get_negative_beliefs`.
+---
+
+### FEATURE_REQUESTS
+- Include a sample output or contract for the `reasons` CLI to verify regex patterns in `cli.py`.
+- Provide existing test files to ensure new CLI flags and async logic don't introduce regressions.
+- Parallelize I/O operations in `_gather_confirmation_context` using `asyncio.gather`.
+- Allow the `grep` glob in `_gather_confirmation_context` to be configurable or more inclusive (e.g., including `.md`, `.json`, `.yml`).

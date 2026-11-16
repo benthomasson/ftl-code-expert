@@ -1,0 +1,44 @@
+### ftl_code_expert/cli.py:_ensure_labels
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Logic is sound for both GitHub and GitLab paths. GitHub uses `--json name -q ".[].name"` which correctly produces one label per line. GitLab JSON parsing is defensive with proper type checks and exception handling. If label listing fails (returncode != 0), `existing` falls back to an empty set, causing all labels to be attempted for creation — if they already exist, the create command fails and the error is logged, which is acceptable best-effort behavior. Two minor observations: (1) `required_labels` always includes both `reasons-gate` and `reasons-negative` even when `--no-negative` is passed, so an unused label type may be created — harmless but slightly wasteful. (2) If `_ensure_labels` fails to create a label (e.g., permissions), execution continues but the downstream `_create_issue` call will also fail for that label since `gh issue create --label X` requires the label to exist. Both failures are logged, so the user gets visibility. No tests exist for this function.
+
+---
+
+### ftl_code_expert/cli.py:file_issues (integration of _ensure_labels)
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The call site at line 3543-3545 is correctly placed — after dedup and LLM confirmation but before issue filing. The `not dry_run and remaining` guard is correct: labels shouldn't be created during dry-run (no side effects), and there's no point creating labels when there are no issues to file. The `required_labels` union of hardcoded labels and user-provided labels covers all labels that will be referenced by `_create_issue`.
+
+---
+
+### ftl_code_expert/data/CLAUDE.md.template
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: N/A
+REASONING: Documentation-only changes. Adds verification commands and a "Using the Reasons Database" section with practical guidance. Commands referenced (`reasons search`, `reasons show`, `reasons explain`, `code-expert verify`) are consistent with the CLI's existing command structure. The guidance to "search beliefs before reading code" and "verify after changes" is sound workflow advice.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not verify `glab label list` accepts `--repo` and `-F json` flags — relying on consistency with existing `glab` usage in `_create_issue`. No test files were available to check whether existing test assertions still hold after these changes. Could not verify whether `gh label create` without `--color` behaves as expected across `gh` CLI versions.
+
+---
+
+### FEATURE_REQUESTS
+- Include the test file(s) for the parent command (`file_issues`) if they exist, even when no tests directly cover the new function — callers' tests may exercise the new code path indirectly
+- Flag when a new function with subprocess calls has zero test coverage, since these are integration-sensitive and hard to verify statically

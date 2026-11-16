@@ -1,0 +1,23 @@
+### ftl_code_expert/language.py
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: PARTIAL
+REASONING: 
+- The `GO` `LanguageProfile` definition is syntactically and structurally correct. The `definition_patterns` are robust, including support for Go method receivers, generics, packages, and typical top-level declarations.
+- However, integration is incomplete: `_CONFIG_TO_LANGUAGE` in `ftl_code_expert/language.py` was not updated to map `"go.mod": "go"`. As a result, automatic configuration-based language detection will fail for Go repositories.
+- The changes are completely untested. There are no tests verifying the Go profile, its config file registration, or its regex-based definition pattern matching.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Could not execute pytest or view other source files via shell commands due to environment-level tool execution policy restrictions.
+- Verified usages and test coverage relying on the provided observation results.
+---
+
+### FEATURE_REQUESTS
+- Ensure full file context and test execution reports are automatically included in observations when shell execution commands are restricted by environment policies.
+---

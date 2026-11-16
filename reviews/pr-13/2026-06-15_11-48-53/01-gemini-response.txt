@@ -1,0 +1,32 @@
+### ftl_code_expert/cli.py:_accept_proposals
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The function correctly extracts the source file path from the proposal's source entry using `_extract_source_file` when a belief is successfully added to `reasons.db`. It then issues a `reasons set-metadata` command via `subprocess.run` to store the path as `source_file` in the belief's metadata. The command is invoked safely without `shell=True` to prevent command injection. A CONCERN is raised solely because the codebase completely lacks automated tests or test configurations to verify this CLI integration path.
+---
+
+### ftl_code_expert/cli.py:_gather_belief_context
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: CONSISTENT
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The change successfully prioritizes reading `source_file` from the node's metadata, falling back to parsing the file with `_extract_source_file` only if not found. This elegantly avoids legacy issues where `_extract_source_file` failed when `project_dir` pointed to `.code-expert`. However, the dictionary retrieval `node.get("metadata", {}).get("source_file")` is questionable: if `"metadata"` exists in the exported JSON but is explicitly `null` (e.g. `{"metadata": null}`), `.get("metadata", {})` returns `None` instead of `{}`, which raises an `AttributeError` on the subsequent `.get("source_file")` call. Using `(node.get("metadata") or {}).get("source_file")` is a much more robust pythonic pattern.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Could not execute the `reasons` CLI tool directly to verify the exact behavior of `reasons set-metadata` under all conditions because the shell command execution tool was not available in this environment.
+- No test suite, test files, or mock structures were present in the repository to run integration checks.
+---
+
+### FEATURE_REQUESTS
+- Provide CLI execution tools (e.g., shell command runner) to allow reviewers to dynamically verify external CLI tool integrations (such as `ftl-reasons` behavior and help schemas).
+- Include sample JSON schema files or mock/fixture outputs for external databases (`reasons.db` / `network.json`) to verify key structures statically.
+---

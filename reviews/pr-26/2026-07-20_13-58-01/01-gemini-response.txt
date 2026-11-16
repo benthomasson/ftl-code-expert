@@ -1,0 +1,39 @@
+I will run a shell command to locate any test files in the workspace to assess the test coverage of the code changes.
+### ftl_code_expert/cli.py:_ensure_labels
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The `_ensure_labels` function is correctly implemented with robust checks and defensive JSON parsing for GitLab CLI (`glab`) output. Error scenarios (non-zero exit codes, malformed JSON, and empty list outputs) are handled gracefully to prevent command crashes. Standard output for status messages is correctly written to stderr (`err=True`).
+---
+
+### ftl_code_expert/cli.py:file_issues
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Integrating `_ensure_labels` into `file_issues` right before issue creation is safe, logically placed, and guarded with `not dry_run and remaining`. It verifies platform and repo credentials prior to calling label check/creation commands, preventing redundant executions or unhandled crashes.
+---
+
+### ftl_code_expert/data/CLAUDE.md.template
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: N/A
+INTEGRATION: WIRED
+REASONING: The additions to the template successfully document the CLI usage around verification workflows (`code-expert verify`) and reasons query workflows (`reasons search`, `reasons show`, etc.). These additions are clear, accurate, and provide excellent guidance for subsequent LLMs and developers working in this workspace.
+---
+
+### SELF_REVIEW
+LIMITATIONS:
+- Could not list the directory structure or locate unit test files because shell command execution was restricted by security policy.
+- Test coverage is marked as UNTESTED as there is no evidence of existing test files covering `file_issues` or `_ensure_labels` in the repository metadata or changes.
+---

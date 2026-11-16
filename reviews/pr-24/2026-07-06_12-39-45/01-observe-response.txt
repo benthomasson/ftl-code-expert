@@ -1,0 +1,27 @@
+```json
+[
+  {"name": "list_source_files_exists", "tool": "function_body", "params": {"file_path": "ftl_code_expert/git_utils.py", "function_name": "list_source_files"}},
+  {"name": "get_imports_callers", "tool": "find_callers", "params": {"symbol": "get_imports"}},
+  {"name": "extract_symbol_callers", "tool": "find_callers", "params": {"symbol": "extract_symbol"}},
+  {"name": "find_related_tests_callers", "tool": "find_callers", "params": {"symbol": "find_related_tests"}},
+  {"name": "find_usages_callers", "tool": "find_callers", "params": {"symbol": "find_usages"}},
+  {"name": "find_symbol_callers", "tool": "find_callers", "params": {"symbol": "find_symbol"}},
+  {"name": "file_imports_callers", "tool": "find_callers", "params": {"symbol": "file_imports"}},
+  {"name": "find_entry_points_callers", "tool": "find_callers", "params": {"symbol": "_find_entry_points"}},
+  {"name": "prepare_diff_topic_callers", "tool": "find_callers", "params": {"symbol": "_prepare_diff_topic"}},
+  {"name": "explore_topics_concurrent_callers", "tool": "find_callers", "params": {"symbol": "_explore_topics_concurrent"}},
+  {"name": "repo_path_to_entry_pattern_callers", "tool": "find_callers", "params": {"symbol": "_repo_path_to_entry_pattern"}},
+  {"name": "gather_source_files_callers", "tool": "find_callers", "params": {"symbol": "_gather_source_files"}},
+  {"name": "format_source_code_callers", "tool": "find_callers", "params": {"symbol": "_format_source_code"}},
+  {"name": "build_function_prompt_callers", "tool": "find_callers", "params": {"symbol": "build_function_prompt"}},
+  {"name": "build_observe_prompt_callers", "tool": "find_callers", "params": {"symbol": "build_observe_prompt"}},
+  {"name": "verify_observe_prompt_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/prompts/verify.py", "function_name": "build_verify_observe_prompt"}},
+  {"name": "prepare_diff_topic_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_prepare_diff_topic"}},
+  {"name": "grep_obs_callers", "tool": "find_callers", "params": {"symbol": "grep"}},
+  {"name": "test_coverage_language", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/language.py"}},
+  {"name": "test_coverage_git_utils", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/git_utils.py"}},
+  {"name": "test_coverage_observations", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/observations.py"}},
+  {"name": "detect_language_callers", "tool": "find_callers", "params": {"symbol": "detect_language"}},
+  {"name": "ctx_obj_init", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "cli"}}
+]
+```

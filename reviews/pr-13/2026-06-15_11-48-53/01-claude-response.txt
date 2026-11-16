@@ -1,0 +1,38 @@
+### ftl_code_expert/cli.py:_accept_proposals
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The write-side change is correct. After successfully adding a belief, it extracts the source file path and stores it as metadata via `reasons set-metadata`. The `set-metadata` return code is intentionally ignored — since the belief was already added, this is best-effort metadata enrichment, and `_gather_belief_context` falls back gracefully if the metadata is absent. The only concern is the call `_extract_source_file(source.strip())` with no `project_dir`, which defaults to resolving relative to CWD (`.`). This is fine for the CLI invocation context but worth noting — if `_accept_proposals` is ever called from a different working directory, the file lookup will break silently (returns `None`). No tests exist for `_accept_proposals` at all (0 test files per observations).
+
+---
+
+### ftl_code_expert/cli.py:_gather_belief_context
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The read-side change is clean. It checks `node.get("metadata", {}).get("source_file")` first, avoiding a disk read of the source entry file when metadata is already populated. Falls back to `_extract_source_file(source, project_dir)` when metadata is absent, preserving full backwards compatibility with beliefs created before this change. The `.get("metadata", {})` chain handles missing keys safely. Integration is complete — the write side in `_accept_proposals` populates the metadata, and this read side consumes it.
+
+---
+
+### Overall Assessment
+VERDICT: CONCERN
+REASONING: The change is logically sound and well-integrated — write side stores metadata at accept time, read side prefers it over disk-based extraction, with a clean fallback. The two concerns are: (1) **zero test coverage** for both `_accept_proposals` and `_extract_source_file` (no test files found in observations), and (2) the silent failure on `set-metadata` — while acceptable for resilience, a `logging.debug` or similar would help diagnose cases where metadata is consistently not being stored.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not verify whether `reasons set-metadata` is an established subcommand (the observation for `set_metadata_raises` returned "Function not found," meaning I couldn't confirm the CLI contract). Could not verify the shape of `node` dict returned by `reasons` to confirm that `node.get("metadata", {}).get("source_file")` matches the actual data structure. No test files were available to assess whether this change breaks any existing assertions.
+
+---
+
+### FEATURE_REQUESTS
+- Include the CLI subcommand interface (e.g., `reasons set-metadata --help` output) when the diff shells out to external tools, so reviewers can verify argument order and existence
+- Flag when test coverage is 0 for both the modified function AND all its callers — this is a stronger signal than just "no tests for this function"

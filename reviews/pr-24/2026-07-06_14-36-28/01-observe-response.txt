@@ -1,0 +1,29 @@
+Looking at this diff, I need to verify several things: signature changes are fully propagated, the new `list_source_files` dependency exists, behavioral changes in entry-point parsing and symbol extraction, and test coverage.
+
+```json
+[
+  {"name": "list_source_files_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/git_utils.py", "function_name": "list_source_files"}},
+  {"name": "extract_symbol_callers", "tool": "find_callers", "params": {"symbol": "extract_symbol"}},
+  {"name": "get_imports_callers", "tool": "find_callers", "params": {"symbol": "get_imports"}},
+  {"name": "find_related_tests_callers", "tool": "find_callers", "params": {"symbol": "find_related_tests"}},
+  {"name": "grep_obs_callers", "tool": "find_callers", "params": {"symbol": "observations.grep"}},
+  {"name": "find_symbol_callers", "tool": "find_callers", "params": {"symbol": "find_symbol"}},
+  {"name": "find_usages_callers", "tool": "find_callers", "params": {"symbol": "find_usages"}},
+  {"name": "file_imports_callers", "tool": "find_callers", "params": {"symbol": "file_imports"}},
+  {"name": "build_observe_prompt_callers", "tool": "find_callers", "params": {"symbol": "build_observe_prompt"}},
+  {"name": "build_function_prompt_callers", "tool": "find_callers", "params": {"symbol": "build_function_prompt"}},
+  {"name": "build_verify_observe_prompt_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/prompts/verify.py", "function_name": "build_verify_observe_prompt"}},
+  {"name": "explore_topics_concurrent_callers", "tool": "find_callers", "params": {"symbol": "_explore_topics_concurrent"}},
+  {"name": "prepare_diff_topic_callers", "tool": "find_callers", "params": {"symbol": "_prepare_diff_topic"}},
+  {"name": "gather_source_files_callers", "tool": "find_callers", "params": {"symbol": "_gather_source_files"}},
+  {"name": "format_source_code_callers", "tool": "find_callers", "params": {"symbol": "_format_source_code"}},
+  {"name": "repo_path_to_entry_pattern_callers", "tool": "find_callers", "params": {"symbol": "_repo_path_to_entry_pattern"}},
+  {"name": "retract_beliefs_callers", "tool": "find_callers", "params": {"symbol": "_retract_beliefs_for_deleted_files"}},
+  {"name": "language_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/language.py"}},
+  {"name": "git_utils_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/git_utils.py"}},
+  {"name": "observations_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/observations.py"}},
+  {"name": "cli_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "detect_language_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/language.py", "function_name": "detect_language"}},
+  {"name": "execute_observations_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/observations.py", "function_name": "execute_observations"}}
+]
+```

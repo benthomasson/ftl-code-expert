@@ -1,0 +1,71 @@
+## Code Review: `verify` command
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean prompt template. Double-braces `{{` for literal JSON in the example are correct for Python `.format()`. Single `{beliefs}` placeholder is properly escaped. The three-way verdict taxonomy (CONFIRMED/STALE/INCONCLUSIVE) is clear and actionable.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Standard re-export. `VERIFY_PROMPT` added to both the import and `__all__`.
+---
+
+### ftl_code_expert/cli.py:_parse_verify_response
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The `re.search(r"\{.*\}", response, re.DOTALL)` regex is greedy — it matches from the **first** `{` to the **last** `}` in the entire response. This works when the LLM returns a single top-level JSON object, but if the response contains trailing prose with a `}` character (e.g. `"Here are the results: {...} Hope that helps!}`), the match over-extends and `json.loads` fails, falling through to the WARN path. This is survivable (returns empty dict, beliefs become INCONCLUSIVE), but the same pattern appears in other commands so it's a known codebase risk, not new here. The per-item validation (checking `isinstance(v, dict)`, `"verdict" in v`, `isinstance(verdict, str)`) is thorough. No tests exist to exercise the parsing edge cases (empty response, partial JSON, extra keys, mixed-case verdicts).
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The command is well-structured and follows the patterns established by `research` and other commands. Specific notes:
+
+1. **`--reason` flag on `reasons retract`** (line ~3879): The subprocess call passes `["reasons", "retract", bid, "--reason", reason]`. If the `reasons` CLI doesn't accept `--reason` on `retract`, every retraction would fail. The code does check `returncode` and report failures, so this won't silently corrupt data — but it would make `--retract` a no-op in practice. Worth verifying the `reasons retract` interface.
+
+2. **Multiple `asyncio.run()` calls in the batch loop** (line ~3831): Each batch calls `asyncio.run(_gather_confirmation_context(...))`. This is consistent with the codebase (29 other production usages), and works in Python 3.10+ since each call creates/tears down a fresh loop. Not a bug, but worth noting.
+
+3. **Batch error handling**: If `invoke_sync` raises for a batch, the entire batch's beliefs silently become INCONCLUSIVE. The error is printed, so the user sees it, but there's no retry or batch-splitting on failure. Acceptable for a first pass.
+
+4. **Selection mode mutual exclusivity**: The `elif` chain (belief_ids → gated → negative → category → verify_all) means only one mode applies. If a user passes both `--gated` and `--negative`, only `--gated` runs with no warning about the ignored flag. This is consistent with how Click flag precedence typically works, but could surprise users.
+
+5. **No tests**: Zero test coverage per the observation (`test_count: 0`). For a command that can retract beliefs (`--retract`), this is the primary concern. At minimum, `_parse_verify_response` deserves unit tests covering: valid JSON, no JSON, malformed JSON, missing verdict keys, and mixed-case verdicts.
+---
+
+## Summary
+
+The implementation is clean, follows existing codebase conventions, and integrates properly. The two concerns are:
+
+1. **No tests** — especially for `_parse_verify_response` and the retraction flow. The parsing function is pure and easily testable.
+2. **Verify `reasons retract --reason`** — confirm this flag exists on the CLI before shipping.
+
+### SELF_REVIEW
+LIMITATIONS: Could not see `invoke_sync` body (observation returned "not found") — verified it's imported from `.llm` but couldn't confirm its exception behavior. Could not verify whether `reasons retract --reason <text>` is a valid CLI invocation. No test files were included in the diff to assess coverage claims.
+---
+
+### FEATURE_REQUESTS
+- Include the interface/help text of external CLI tools called via subprocess (e.g., `reasons retract --help`) so reviewers can verify flag compatibility
+- When `test_count: 0`, automatically search for the closest test file pattern (e.g., `tests/test_cli.py`) and include its structure so the reviewer can assess whether tests should be added to an existing file or a new one
+---

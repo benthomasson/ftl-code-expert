@@ -1,0 +1,44 @@
+### ftl_code_expert/cli.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: 
+1. **`_reasons_export` Fix**: Corrects a bug where `network.json` was overwritten by stdout (a mere status message). Removing `network_path.write_text(result.stdout)` allows the `reasons` tool to write directly to `network.json` as designed.
+2. **Fresh Metadata Auto-Sync**: Calling `_reasons_export()` at the start of `verify()` ensures that `network.json` is always fresh before being loaded into `nodes`.
+3. **LLM-Driven Observation Loop**: `_verify_belief_with_observations` and `_gather_verify_contexts` correctly implement the observation pattern. They dynamically compile initial context (`src_file` content truncated safely to 4000 characters), query the model via `VERIFY_OBSERVE_PROMPT` for additional observation steps, run them concurrently, and assemble the resulting dataset.
+4. **Robust Error Handling**: Using `asyncio.gather(*tasks, return_exceptions=True)` in context-gathering pipelines prevents failures of individual observation queries from aborting or crashing batch verification.
+5. **CLI Integration**: Seamless addition of the `--no-observe` flag lets users optionally bypass the multi-step observation loop and fall back to simple file/grep reads.
+
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Properly exposes `VERIFY_OBSERVE_PROMPT` in the package's public interface (`__all__`), facilitating clean imports in `cli.py`.
+
+---
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The new `VERIFY_OBSERVE_PROMPT` is well-structured and clearly defines the expected JSON response schema. It correctly uses doubled-braces (`{{` and `}}`) for JSON format literals, preventing any format syntax errors when interpolating single-braced parameters `{belief_id}`, `{belief_text}`, `{seed_context}`, and `{tree}` at runtime.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: No unit tests or integration tests exist in the workspace root or codebase itself (the scanned `.venv` test files are standard dependency test suites and unrelated). Behavior was verified through static analysis of functions and import safety.
+---

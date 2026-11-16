@@ -1,0 +1,69 @@
+### ftl_code_expert/cli.py:_reasons_export
+VERDICT: BLOCK
+CORRECTNESS: BROKEN
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The line `network_path.write_text(result.stdout)` has been removed. However, the command prints `Updated network.json` on success. This creates a silent bug where `reasons export` runs and its output is captured, but never written to `network.json`, while falsely claiming the file was updated. This will cause stale belief network data to be loaded from the cache.
+---
+
+### ftl_code_expert/cli.py:_verify_belief_with_observations
+VERDICT: CONCERN
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The implementation is clean and handles seeding/truncation correctly. However, the `timeout` parameter is defined in the function signature but is completely unused inside the body (not passed down to `invoke` or other async calls). Furthermore, there is no test coverage for this function.
+---
+
+### ftl_code_expert/cli.py:_gather_verify_contexts
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The logic is sound and robust. It uses `return_exceptions=True` under `asyncio.gather` and handles individual failures gracefully, outputting errors using `click.echo(..., err=True)` and returning a safe fallback context. No local tests exist for this code.
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The CLI command integration is correct. Positional arguments map cleanly to click options and decorators. The command properly respects the new `--no-observe` flag and falls back to simple context gathering when enabled.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Correctly imports and exports the new `VERIFY_OBSERVE_PROMPT` in `__all__`.
+---
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The prompt template `VERIFY_OBSERVE_PROMPT` is well-written and correctly escapes double curly braces for formatting. However, there are no tests verifying prompt assembly or response parsing.
+---
+
+### SELF_REVIEW
+LIMITATIONS: The test runner mapped several virtualenv SymPy tests (e.g., `test_arit.py`, `test_expand.py`) as "related tests" because of a simple name matching collision on the word "verify" or "verify.py". There are actually no local unit or integration tests for the observation-based verification features implemented in this PR.
+---

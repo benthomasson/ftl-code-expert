@@ -1,0 +1,54 @@
+The `snapshot_ids` parameter uses `multiple=True`, which means Click expects it as a tuple of strings. The call at line 4419 is `ctx.invoke(generate_summary, snapshot_ids=tuple(pre_run_ids))`. This passes a tuple of set elements (strings from network node IDs). This is correct.
+
+Now let me check what happens when `init` calls `sys.exit(1)` internally — the `SystemExit` catch handles that. But there's a nuance: `init` doesn't use `@click.pass_context`, so it doesn't get the shared context. It writes config via `_save_config`, which the later steps read. The `init` function also writes to CWD — so the working directory matters. The `analyze` command doesn't `chdir` — it sets `ctx.obj["repo"]` but the CWD stays the same. Let me check if `init` relies on CWD:
+
+Looking at `init` (from observations): it creates `PROJECT_DIR` relative to `Path.cwd()`, creates `entries/` relative to CWD, and calls `_save_config` which presumably writes to CWD. So `analyze` must be run from the target directory or the config/entries will end up in the wrong place. But wait — `init` takes `repo_path` as an argument and uses `os.path.abspath(repo_path)` for the config. The issue is that `init` creates files relative to CWD, not relative to `repo_path`. This is the same behavior as running `code-expert init ~/git/my-project` from any directory — it creates `.code-expert/` and `entries/` in CWD. So `analyze` inherits this same behavior: you run it from the directory where you want the knowledge base.
+
+This is a pre-existing design choice, not a bug in `analyze`.
+
+---
+
+Here's the review:
+
+### ftl_code_expert/cli.py:analyze
+VERDICT: CONCERN
+CORRECTNESS: QUESTIONABLE
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: N/A
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING:
+
+**Correctness issues:**
+
+1. **`project_dir` computed twice** (lines 4323 and 4433): Minor redundancy — `project_dir` is assigned at line 4323 for the explore limit calculation and then reassigned the same value at line 4433 for the checkpoint. Not a bug, just dead code.
+
+2. **`pending_count` called before `scan` completes when `limit=0`** (line 4325): When `limit=0`, `explore_limit` is computed as `pending_count(project_dir)` *before* explore runs. This is computed after scan (step 2), so the queue is populated. This is correct.
+
+3. **`SystemExit` handling is inconsistent**: Steps 1–7 print a `WARN:` message on `SystemExit`, but step 8 (`generate-summary`) and step 9 (`file-issues`) silently swallow `SystemExit` failures — they append to `errors` but don't echo a warning. This inconsistency means a user won't see visual feedback if the summary or issue-filing step fails.
+
+4. **`explore` with `loop_max=0`**: If `pending_count` returns 0 (empty queue when `limit=0`), `ctx.invoke(explore, ..., loop_max=0)` enters `_explore_loop` with `max_topics=0`. The `while explored < max_topics` loop exits immediately without error, which is fine — but the step banner says "Explore (up to 0 topics)" which is confusing.
+
+5. **Error accumulation is fire-and-forget**: Every step wraps in try/except and continues on error. If `init` fails (e.g., missing `git`/`entry` tools), subsequent steps like `scan` will also fail because config isn't written. The cascade of failures produces a noisy list of errors that obscures the root cause. Consider short-circuiting on `init` failure since it's a prerequisite for everything else.
+
+6. **`_load_network()` called from CWD**: The snapshot logic at lines 4335–4338 calls `_load_network()` which looks for `network.json` in CWD or runs `reasons export`. This is consistent with how other commands work, so it's correct within the existing design.
+
+**Testing**: Zero tests for this command. The `analyze` command orchestrates 8+ subcommands — even a basic smoke test verifying the happy path wiring or error handling would be valuable.
+
+**Integration**: The command is properly wired as a Click subcommand, correctly sets `ctx.obj["repo"]`, and chains subcommands via `ctx.invoke` with correct parameter signatures. The checkpoint JSON output is a nice touch for debugging long runs.
+
+---
+
+### SELF_REVIEW
+LIMITATIONS: Could not verify whether `ctx.invoke` correctly shares the Click context's `obj` dict with subcommands that use `@click.pass_context` (like `scan`, `explore`, `derive`) — this is a Click framework behavior I'm inferring from the pattern used in the existing `update` command (which presumably works the same way). Also could not see the `update` command implementation to compare patterns, though it's referenced in the diff context as being just above `analyze`. Could not run the code to verify end-to-end behavior.
+
+---
+
+### FEATURE_REQUESTS
+- Include the sibling/analogous function (`update` command in this case) in observations when a new function follows the same pattern — enables diff-against-pattern review.
+- Show import statements at the top of the file to verify all referenced names are imported.
+
+---
+
+**Summary**: The `analyze` command is a reasonable orchestration wrapper following the pattern of the existing `update` command. Two concerns worth addressing: (1) the inconsistent error reporting on steps 8–9 (missing `WARN:` echo), and (2) the complete absence of tests. The `init` failure cascade (where a failed init causes all subsequent steps to also fail noisily) is worth considering for a short-circuit, but is arguably a design choice rather than a bug.

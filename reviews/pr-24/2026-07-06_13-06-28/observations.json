@@ -1,0 +1,917 @@
+{
+  "extract_symbol_callers": {
+    "symbol": "extract_symbol",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 20,
+        "text": "extract_symbol,",
+        "context_function": null,
+        "context_snippet": "   17: from .language import detect_language, PYTHON\n   18: from .git_utils import (\n   19:     commits_since_checkpoint,\n>> 20:     extract_symbol,\n   21:     find_related_tests,\n   22:     get_commit_log,\n   23:     get_diff,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 499,
+        "text": "symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)",
+        "context_function": "explain_function",
+        "context_snippet": "   496:     abs_repo = os.path.abspath(repo_path)\n   497:     lang = _get_lang(ctx)\n   498: \n>> 499:     symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)\n   500:     if symbol_source is None:\n   501:         click.echo(f\"Error: Symbol '{symbol_name}' not found in {file_path}\", err=True)\n   502:         sys.exit(1)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 962,
+        "text": "symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)",
+        "context_function": "_prepare_function_topic",
+        "context_snippet": "   959:         click.echo(f\"File not found: {file_path} (skipping)\", err=True)\n   960:         return None\n   961: \n>> 962:     symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)\n   963:     if symbol_source is None:\n   964:         click.echo(f\"Symbol '{symbol_name}' not found in {file_path} (skipping)\", err=True)\n   965:         return None"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 163,
+        "text": "def _extract_symbol_indent(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:",
+        "context_function": "get_grep_include_args",
+        "context_snippet": "   160:     return [f\"--include={g}\" for g in lang.source_globs]\n   161: \n   162: \n>> 163: def _extract_symbol_indent(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:\n   164:     \"\"\"Indent-based scope extraction (Python).\"\"\"\n   165:     from .git_utils import get_file_content\n   166: "
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 204,
+        "text": "def _extract_symbol_brace(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:",
+        "context_function": "_extract_symbol_indent",
+        "context_snippet": "   201:     return \"\\n\".join(result_lines)\n   202: \n   203: \n>> 204: def _extract_symbol_brace(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:\n   205:     \"\"\"Brace-counting scope extraction (C/C++/Java/JS/etc.).\"\"\"\n   206:     from .git_utils import get_file_content\n   207: "
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 277,
+        "text": "def extract_symbol_with_profile(",
+        "context_function": "_extract_symbol_brace",
+        "context_snippet": "   274:     return \"\\n\".join(result_lines)\n   275: \n   276: \n>> 277: def extract_symbol_with_profile(\n   278:     file_path: str, symbol: str, lang: LanguageProfile | None = None,\n   279: ) -> str | None:\n   280:     lang = lang or PYTHON"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 282,
+        "text": "return _extract_symbol_indent(file_path, symbol, lang)",
+        "context_function": "extract_symbol_with_profile",
+        "context_snippet": "   279: ) -> str | None:\n   280:     lang = lang or PYTHON\n   281:     if lang.scope_style == \"indent\":\n>> 282:         return _extract_symbol_indent(file_path, symbol, lang)\n   283:     return _extract_symbol_brace(file_path, symbol, lang)"
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 283,
+        "text": "return _extract_symbol_brace(file_path, symbol, lang)",
+        "context_function": "extract_symbol_with_profile",
+        "context_snippet": "   280:     lang = lang or PYTHON\n   281:     if lang.scope_style == \"indent\":\n   282:         return _extract_symbol_indent(file_path, symbol, lang)\n>> 283:     return _extract_symbol_brace(file_path, symbol, lang)"
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 363,
+        "text": "def extract_symbol(file_path: str, symbol: str, lang: LanguageProfile | None = None) -> str | None:",
+        "context_function": "get_imports",
+        "context_snippet": "   360:     return {\"imports\": imports, \"imported_by\": imported_by}\n   361: \n   362: \n>> 363: def extract_symbol(file_path: str, symbol: str, lang: LanguageProfile | None = None) -> str | None:\n   364:     \"\"\"\n   365:     Extract a function or class definition from a file.\n   366: "
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 375,
+        "text": "from .language import extract_symbol_with_profile",
+        "context_function": "extract_symbol",
+        "context_snippet": "   372:     Returns:\n   373:         Source code of the symbol, or None if not found\n   374:     \"\"\"\n>> 375:     from .language import extract_symbol_with_profile\n   376: \n   377:     return extract_symbol_with_profile(file_path, symbol, lang)\n   378: "
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 377,
+        "text": "return extract_symbol_with_profile(file_path, symbol, lang)",
+        "context_function": "extract_symbol",
+        "context_snippet": "   374:     \"\"\"\n   375:     from .language import extract_symbol_with_profile\n   376: \n>> 377:     return extract_symbol_with_profile(file_path, symbol, lang)\n   378: \n   379: \n   380: def list_commits_with_files("
+      }
+    ],
+    "test_callers": [],
+    "production_count": 11,
+    "test_count": 0,
+    "total_count": 11
+  },
+  "get_imports_callers": {
+    "symbol": "get_imports",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 27,
+        "text": "get_imports,",
+        "context_function": null,
+        "context_snippet": "   24:     get_diff_since,\n   25:     get_diff_since_commit,\n   26:     get_file_content,\n>> 27:     get_imports,\n   28:     get_repo_structure,\n   29:     list_commits_with_files,\n   30:     list_source_files,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 446,
+        "text": "import_info = get_imports(abs_path, os.path.abspath(repo_path), lang=lang)",
+        "context_function": "explain_file",
+        "context_snippet": "   443: \n   444:     rel_path = os.path.relpath(abs_path, os.path.abspath(repo_path))\n   445:     lang = _get_lang(ctx)\n>> 446:     import_info = get_imports(abs_path, os.path.abspath(repo_path), lang=lang)\n   447:     repo_tree = get_repo_structure(os.path.abspath(repo_path), max_depth=2)\n   448: \n   449:     prompt = build_file_prompt("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 933,
+        "text": "import_info = get_imports(abs_path, repo_path, lang=lang)",
+        "context_function": "_prepare_file_topic",
+        "context_snippet": "   930:         return None\n   931: \n   932:     rel_path = os.path.relpath(abs_path, repo_path)\n>> 933:     import_info = get_imports(abs_path, repo_path, lang=lang)\n   934:     repo_tree = get_repo_structure(repo_path, max_depth=2)\n   935: \n   936:     prompt = build_file_prompt("
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 318,
+        "text": "def get_imports(file_path: str, repo_path: str, lang: LanguageProfile | None = None) -> dict:",
+        "context_function": "get_commit_log",
+        "context_snippet": "   315:     return result.stdout\n   316: \n   317: \n>> 318: def get_imports(file_path: str, repo_path: str, lang: LanguageProfile | None = None) -> dict:\n   319:     \"\"\"\n   320:     Analyze imports for a source file.\n   321: "
+      }
+    ],
+    "test_callers": [],
+    "production_count": 4,
+    "test_count": 0,
+    "total_count": 4
+  },
+  "find_related_tests_callers": {
+    "symbol": "find_related_tests",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 21,
+        "text": "find_related_tests,",
+        "context_function": null,
+        "context_snippet": "   18: from .git_utils import (\n   19:     commits_since_checkpoint,\n   20:     extract_symbol,\n>> 21:     find_related_tests,\n   22:     get_commit_log,\n   23:     get_diff,\n   24:     get_diff_since,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 507,
+        "text": "related_tests = find_related_tests(abs_path, abs_repo, symbol_name, lang=lang)",
+        "context_function": "explain_function",
+        "context_snippet": "   504:     click.echo(f\"Explaining {symbol_name} from {file_path}...\", err=True)\n   505: \n   506:     full_content = get_file_content(abs_path)\n>> 507:     related_tests = find_related_tests(abs_path, abs_repo, symbol_name, lang=lang)\n   508:     rel_path = os.path.relpath(abs_path, abs_repo)\n   509: \n   510:     prompt = build_function_prompt("
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 968,
+        "text": "related_tests = find_related_tests(abs_path, repo_path, symbol_name, lang=lang)",
+        "context_function": "_prepare_function_topic",
+        "context_snippet": "   965:         return None\n   966: \n   967:     full_content = get_file_content(abs_path)\n>> 968:     related_tests = find_related_tests(abs_path, repo_path, symbol_name, lang=lang)\n   969:     rel_path = os.path.relpath(abs_path, repo_path)\n   970: \n   971:     prompt = build_function_prompt("
+      },
+      {
+        "file": "ftl_code_expert/git_utils.py",
+        "line": 439,
+        "text": "def find_related_tests(",
+        "context_function": "list_commits_with_files",
+        "context_snippet": "   436:     return commits\n   437: \n   438: \n>> 439: def find_related_tests(\n   440:     file_path: str, repo_path: str, symbol: str | None = None, lang: LanguageProfile | None = None,\n   441: ) -> list[str]:\n   442:     \"\"\""
+      }
+    ],
+    "test_callers": [],
+    "production_count": 4,
+    "test_count": 0,
+    "total_count": 4
+  },
+  "grep_obs_callers": {
+    "symbol": "grep",
+    "production_callers": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/packaging/licenses/_spdx.py",
+        "line": 497,
+        "text": "'ngrep': {'id': 'ngrep', 'deprecated': False},",
+        "context_function": "SPDXException (class)",
+        "context_snippet": "   494:     'netcdf': {'id': 'NetCDF', 'deprecated': False},\n   495:     'newsletr': {'id': 'Newsletr', 'deprecated': False},\n   496:     'ngpl': {'id': 'NGPL', 'deprecated': False},\n>> 497:     'ngrep': {'id': 'ngrep', 'deprecated': False},\n   498:     'nicta-1.0': {'id': 'NICTA-1.0', 'deprecated': False},\n   499:     'nist-pd': {'id': 'NIST-PD', 'deprecated': False},\n   500:     'nist-pd-fallback': {'id': 'NIST-PD-fallback', 'deprecated': False},"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/utilities/lambdify.py",
+        "line": 1148,
+        "text": "self._argrepr = LambdaPrinter().doprint",
+        "context_function": "__init__",
+        "context_snippet": "   1145:             #    dummyrepr = printer._print_Dummy\n   1146: \n   1147:         # Used to print the generated function arguments in a standard way\n>> 1148:         self._argrepr = LambdaPrinter().doprint\n   1149: \n   1150:     def doprint(self, funcname, args, expr, *, cses=()):\n   1151:         \"\"\""
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/utilities/lambdify.py",
+        "line": 1177,
+        "text": "funcargs.append(self._argrepr(Dummy()))",
+        "context_function": "doprint",
+        "context_snippet": "   1174: \n   1175:         for argstr in argstrs:\n   1176:             if iterable(argstr):\n>> 1177:                 funcargs.append(self._argrepr(Dummy()))\n   1178:                 unpackings.extend(self._print_unpacking(argstr, funcargs[-1]))\n   1179:             else:\n   1180:                 funcargs.append(argstr)"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/utilities/lambdify.py",
+        "line": 1258,
+        "text": "s = self._argrepr(dummy)",
+        "context_function": "update_dummies",
+        "context_snippet": "   1255:                     if isinstance(expr, Expr):\n   1256:                         dummy = uniquely_named_symbol(\n   1257:                             dummy.name, expr, modify=lambda s: '_' + s)\n>> 1258:                     s = self._argrepr(dummy)\n   1259:                     update_dummies(arg, dummy)\n   1260:                     expr = self._subexpr(expr, _dummies_dict)\n   1261:             elif dummify or isinstance(arg, (Function, Derivative)):"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/utilities/lambdify.py",
+        "line": 1263,
+        "text": "s = self._argrepr(dummy)",
+        "context_function": "update_dummies",
+        "context_snippet": "   1260:                     expr = self._subexpr(expr, _dummies_dict)\n   1261:             elif dummify or isinstance(arg, (Function, Derivative)):\n   1262:                 dummy = Dummy()\n>> 1263:                 s = self._argrepr(dummy)\n   1264:                 update_dummies(arg, dummy)\n   1265:                 expr = self._subexpr(expr, _dummies_dict)\n   1266:             else:"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_scilab_builtins.py",
+        "line": 585,
+        "text": "'grep',",
+        "context_function": null,
+        "context_snippet": "   582:     'grand',\n   583:     'graphicfunction',\n   584:     'grayplot',\n>> 585:     'grep',\n   586:     'gsort',\n   587:     'gstacksize',\n   588:     'h5attr',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/mosel.py",
+        "line": 299,
+        "text": "'regreplace',",
+        "context_function": null,
+        "context_snippet": "   296:     'quote',\n   297:     'readtextline',\n   298:     'regmatch',\n>> 299:     'regreplace',\n   300:     'removedir',\n   301:     'removefiles',\n   302:     'setchar',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/perl.py",
+        "line": 96,
+        "text": "'goto', 'grep', 'hex', 'import', 'index', 'int', 'ioctl', 'join', 'keys', 'kill', 'last',",
+        "context_function": "PerlLexer (class)",
+        "context_snippet": "   93:                 'getppid', 'getpriority', 'getprotobyname', 'getprotobynumber',\n   94:                 'getprotoent', 'getpwent', 'getpwnam', 'getpwuid', 'getservbyname',\n   95:                 'getservbyport', 'getservent', 'getsockname', 'getsockopt', 'glob', 'gmtime',\n>> 96:                 'goto', 'grep', 'hex', 'import', 'index', 'int', 'ioctl', 'join', 'keys', 'kill', 'last',\n   97:                 'lc', 'lcfirst', 'length', 'link', 'listen', 'local', 'localtime', 'log', 'lstat',\n   98:                 'map', 'mkdir', 'msgctl', 'msgget', 'msgrcv', 'msgsnd', 'my', 'next', 'oct', 'open',\n   99:                 'opendir', 'ord', 'our', 'pack', 'pipe', 'pop', 'pos', 'printf',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/perl.py",
+        "line": 304,
+        "text": "'grep','handle','handled','handles','hardware','has_accessor','Hash',",
+        "context_function": "Perl6Lexer (class)",
+        "context_snippet": "   301:         'flatmap','flip','floor','flunk','flush','fmt','format','formatter',\n   302:         'freeze','from','from-list','from-loop','from-posix','full',\n   303:         'full-barrier','get','get_value','getc','gist','got','grab','grabpairs',\n>> 304:         'grep','handle','handled','handles','hardware','has_accessor','Hash',\n   305:         'head','headers','hh-mm-ss','hidden','hides','hour','how','hyper','id',\n   306:         'illegal','im','in','indent','index','indices','indir','infinite',\n   307:         'infix','infix:<+>','infix:<->','install_method_cache','Instant',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/automation.py",
+        "line": 279,
+        "text": "stringregexpreplace stringreplace stringright stringsplit stringstripcr",
+        "context_function": "AutoItLexer (class)",
+        "context_snippet": "   276:     stringinstr stringisalnum stringisalpha stringisascii stringisdigit\n   277:     stringisfloat stringisint stringislower stringisspace stringisupper\n   278:     stringisxdigit stringleft stringlen stringlower stringmid stringregexp\n>> 279:     stringregexpreplace stringreplace stringright stringsplit stringstripcr\n   280:     stringstripws stringtoasciiarray stringtobinary stringtrimleft\n   281:     stringtrimright stringupper tan tcpaccept tcpclosesocket tcpconnect\n   282:     tcplisten tcpnametoip tcprecv tcpsend tcpshutdown tcpstartup timerdiff"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_php_builtins.py",
+        "line": 1847,
+        "text": "'preg_grep',",
+        "context_function": null,
+        "context_snippet": "   1844:            'pcntl_wstopsig',\n   1845:            'pcntl_wtermsig'),\n   1846:  'PCRE': ('preg_filter',\n>> 1847:           'preg_grep',\n   1848:           'preg_last_error_msg',\n   1849:           'preg_last_error',\n   1850:           'preg_match_all',"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/matlab.py",
+        "line": 2830,
+        "text": "# Now grep through it:",
+        "context_function": "OctaveLexer (class)",
+        "context_snippet": "   2827:     #\n   2828:     #   $ info octave --subnodes -o octave-manual\n   2829:     #\n>> 2830:     # Now grep through it:\n   2831: \n   2832:     # for i in \\\n   2833:     #     \"Built-in Function\" \"Command\" \"Function File\" \\"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 294,
+        "text": "('gr','grep'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   291:         ('fun','fun'),\n   292:         ('g','g'),\n   293:         ('go','goto'),\n>> 294:         ('gr','grep'),\n   295:         ('grepa','grepadd'),\n   296:         ('gui','gui'),\n   297:         ('gvim','gvim'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 295,
+        "text": "('grepa','grepadd'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   292:         ('g','g'),\n   293:         ('go','goto'),\n   294:         ('gr','grep'),\n>> 295:         ('grepa','grepadd'),\n   296:         ('gui','gui'),\n   297:         ('gvim','gvim'),\n   298:         ('h','h'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 302,
+        "text": "('helpg','helpgrep'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   299:         ('h','help'),\n   300:         ('ha','hardcopy'),\n   301:         ('helpf','helpfind'),\n>> 302:         ('helpg','helpgrep'),\n   303:         ('helpt','helptags'),\n   304:         ('hi','hi'),\n   305:         ('hid','hide'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 357,
+        "text": "('lgr','lgrep'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   354:         ('lg','lgetfile'),\n   355:         ('lgetb','lgetbuffer'),\n   356:         ('lgete','lgetexpr'),\n>> 357:         ('lgr','lgrep'),\n   358:         ('lgrepa','lgrepadd'),\n   359:         ('lh','lhelpgrep'),\n   360:         ('ll','ll'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 358,
+        "text": "('lgrepa','lgrepadd'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   355:         ('lgetb','lgetbuffer'),\n   356:         ('lgete','lgetexpr'),\n   357:         ('lgr','lgrep'),\n>> 358:         ('lgrepa','lgrepadd'),\n   359:         ('lh','lhelpgrep'),\n   360:         ('ll','ll'),\n   361:         ('lla','llast'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 359,
+        "text": "('lh','lhelpgrep'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   356:         ('lgete','lgetexpr'),\n   357:         ('lgr','lgrep'),\n   358:         ('lgrepa','lgrepadd'),\n>> 359:         ('lh','lhelpgrep'),\n   360:         ('ll','ll'),\n   361:         ('lla','llast'),\n   362:         ('lli','llist'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 386,
+        "text": "('lv','lvimgrep'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   383:         ('lua','lua'),\n   384:         ('luado','luado'),\n   385:         ('luafile','luafile'),\n>> 386:         ('lv','lvimgrep'),\n   387:         ('lvimgrepa','lvimgrepadd'),\n   388:         ('lw','lwindow'),\n   389:         ('m','move'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 387,
+        "text": "('lvimgrepa','lvimgrepadd'),",
+        "context_function": "_getcommand",
+        "context_snippet": "   384:         ('luado','luado'),\n   385:         ('luafile','luafile'),\n   386:         ('lv','lvimgrep'),\n>> 387:         ('lvimgrepa','lvimgrepadd'),\n   388:         ('lw','lwindow'),\n   389:         ('m','move'),\n   390:         ('ma','ma'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 560,
+        "text": "('startg','startgreplace'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 637,
+        "text": "('vim','vimgrep'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 638,
+        "text": "('vimgrepa','vimgrepadd'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 913,
+        "text": "('grepformat','grepformat'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/_vim_builtins.py",
+        "line": 914,
+        "text": "('grepprg','grepprg'),"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/pygments/lexers/pascal.py",
+        "line": 209,
+        "text": "'stringreplace', 'stringtoguid', 'strlcat', 'strlcomp', 'strlcopy',"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 5,
+        "text": "requests specific observations (grep, file reads, etc.) and gets"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 22,
+        "text": "async def grep("
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 41,
+        "text": "\"grep\", \"-Ern\", *include_args, pattern, repo_path,"
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 49,
+        "text": "return {\"error\": \"grep timed out\", \"pattern\": pattern}"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 55,
+    "test_count": 0,
+    "total_count": 55
+  },
+  "find_usages_callers": {
+    "symbol": "find_usages",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 212,
+        "text": "async def find_usages(",
+        "context_function": "find_symbol",
+        "context_snippet": "   209:         return {\"error\": str(e), \"symbol\": symbol}\n   210: \n   211: \n>> 212: async def find_usages(\n   213:     symbol: str, repo_path: str, lang: LanguageProfile | None = None,\n   214: ) -> dict[str, Any]:\n   215:     \"\"\""
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 326,
+        "text": "\"find_usages\": find_usages,",
+        "context_function": "file_imports",
+        "context_snippet": "   323:     \"read_file\": read_file,\n   324:     \"list_directory\": list_directory,\n   325:     \"find_symbol\": find_symbol,\n>> 326:     \"find_usages\": find_usages,\n   327:     \"file_imports\": file_imports,\n   328: }\n   329: "
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3116,
+        "text": "Reads the source file, finds key symbols, and runs find_usages/grep",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3113: ) -> tuple[str | None, dict]:\n   3114:     \"\"\"Auto-gather observations for a belief before LLM involvement.\n   3115: \n>> 3116:     Reads the source file, finds key symbols, and runs find_usages/grep\n   3117:     in parallel. Returns (src_file, observations_dict).\n   3118:     \"\"\"\n   3119:     from .observations import find_usages, grep, read_file"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3119,
+        "text": "from .observations import find_usages, grep, read_file",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3116:     Reads the source file, finds key symbols, and runs find_usages/grep\n   3117:     in parallel. Returns (src_file, observations_dict).\n   3118:     \"\"\"\n>> 3119:     from .observations import find_usages, grep, read_file\n   3120: \n   3121:     lang = lang or detect_language(repo_path)\n   3122: "
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3145,
+        "text": "auto_tasks.append(find_usages(sym, repo_path, lang=lang))",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3142:             symbols.append(term)\n   3143: \n   3144:     for sym in symbols[:2]:\n>> 3145:         auto_tasks.append(find_usages(sym, repo_path, lang=lang))\n   3146:         auto_names.append(f\"find_usages:{sym}\")\n   3147: \n   3148:     if not symbols and terms:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3146,
+        "text": "auto_names.append(f\"find_usages:{sym}\")",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3143: \n   3144:     for sym in symbols[:2]:\n   3145:         auto_tasks.append(find_usages(sym, repo_path, lang=lang))\n>> 3146:         auto_names.append(f\"find_usages:{sym}\")\n   3147: \n   3148:     if not symbols and terms:\n   3149:         auto_tasks.append(grep(terms[0], repo_path, glob=lang.source_globs, max_results=10))"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3172,
+        "text": "1. Auto-gather: read source file + find_usages/grep for key symbols",
+        "context_function": "_verify_belief_with_observations",
+        "context_snippet": "   3169: ) -> tuple[str, str]:\n   3170:     \"\"\"Gather code context for a belief using the observe pattern.\n   3171: \n>> 3172:     1. Auto-gather: read source file + find_usages/grep for key symbols\n   3173:     2. Ask LLM what additional observations it needs\n   3174:     3. Execute LLM-requested observations in parallel\n   3175:     4. Return combined context"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 28,
+        "text": "| `find_usages` | Find where a symbol is used | `symbol` |",
+        "context_function": null,
+        "context_snippet": "   25: | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |\n   26: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n   27: | `find_symbol` | Find where a class/function is defined | `symbol` |\n>> 28: | `find_usages` | Find where a symbol is used | `symbol` |\n   29: | `file_imports` | Extract imports from a file | `file_path` |\n   30: \n   31: ## Output Format"
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 35,
+        "text": "| `find_usages` | Find where a symbol is used | `symbol` |",
+        "context_function": null,
+        "context_snippet": "   32: | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |\n   33: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n   34: | `find_symbol` | Find where a class/function is defined | `symbol` |\n>> 35: | `find_usages` | Find where a symbol is used | `symbol` |\n   36: | `file_imports` | Extract imports from a file | `file_path` |\n   37: \n   38: ## Output Format"
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 55,
+        "text": "- Use `find_usages` to trace how functions/classes are actually used.",
+        "context_function": null,
+        "context_snippet": "   52: - Focus on what you need to verify the specific claim above.\n   53: - If the initial code context already covers the claim, request observations that would \\\n   54: confirm related behavior (callers, tests, configuration).\n>> 55: - Use `find_usages` to trace how functions/classes are actually used.\n   56: - Use `find_symbol` to locate definitions referenced in the belief.\n   57: - If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.\n   58: "
+      }
+    ],
+    "test_callers": [],
+    "production_count": 10,
+    "test_count": 0,
+    "total_count": 10
+  },
+  "find_symbol_callers": {
+    "symbol": "find_symbol",
+    "production_callers": [
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 137,
+        "text": "req_keys = find_symbols(proposition)",
+        "context_function": "extract_predargs",
+        "context_snippet": "   134:     {x, y, Abs(x*y)}\n   135: \n   136:     \"\"\"\n>> 137:     req_keys = find_symbols(proposition)\n   138:     keys = proposition.all_predicates()\n   139:     # XXX: We need this since True/False are not Basic\n   140:     lkeys = set()"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 151,
+        "text": "syms = find_symbols(l)",
+        "context_function": "extract_predargs",
+        "context_snippet": "   148:     while tmp_keys != set():\n   149:         tmp = set()\n   150:         for l in lkeys:\n>> 151:             syms = find_symbols(l)\n   152:             if (syms & req_keys) != set():\n   153:                 tmp |= syms\n   154:         tmp_keys = tmp - req_keys"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 156,
+        "text": "keys |= {l for l in lkeys if find_symbols(l) & req_keys != set()}",
+        "context_function": "extract_predargs",
+        "context_snippet": "   153:                 tmp |= syms\n   154:         tmp_keys = tmp - req_keys\n   155:         req_keys |= tmp_keys\n>> 156:     keys |= {l for l in lkeys if find_symbols(l) & req_keys != set()}\n   157: \n   158:     exprs = set()\n   159:     for key in keys:"
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 166,
+        "text": "def find_symbols(pred):",
+        "context_function": "extract_predargs",
+        "context_snippet": "   163:             exprs.add(key)\n   164:     return exprs\n   165: \n>> 166: def find_symbols(pred):\n   167:     \"\"\"\n   168:     Find every :obj:`~.Symbol` in *pred*.\n   169: "
+      },
+      {
+        "file": ".venv/lib/python3.14/site-packages/sympy/assumptions/satask.py",
+        "line": 179,
+        "text": "symbols |= find_symbols(a)",
+        "context_function": "find_symbols",
+        "context_snippet": "   176:     if isinstance(pred, CNF):\n   177:         symbols = set()\n   178:         for a in pred.all_predicates():\n>> 179:             symbols |= find_symbols(a)\n   180:         return symbols\n   181:     return pred.atoms(Symbol)\n   182: "
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 158,
+        "text": "async def find_symbol(",
+        "context_function": "_walk",
+        "context_snippet": "   155:         return {\"error\": str(e), \"dir\": dir_path}\n   156: \n   157: \n>> 158: async def find_symbol(\n   159:     symbol: str, repo_path: str, lang: LanguageProfile | None = None,\n   160: ) -> dict[str, Any]:\n   161:     \"\"\""
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 325,
+        "text": "\"find_symbol\": find_symbol,",
+        "context_function": "file_imports",
+        "context_snippet": "   322:     \"grep\": grep,\n   323:     \"read_file\": read_file,\n   324:     \"list_directory\": list_directory,\n>> 325:     \"find_symbol\": find_symbol,\n   326:     \"find_usages\": find_usages,\n   327:     \"file_imports\": file_imports,\n   328: }"
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 27,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |",
+        "context_function": null,
+        "context_snippet": "   24: | `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: {default_glob}) |\n   25: | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |\n   26: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n>> 27: | `find_symbol` | Find where a class/function is defined | `symbol` |\n   28: | `find_usages` | Find where a symbol is used | `symbol` |\n   29: | `file_imports` | Extract imports from a file | `file_path` |\n   30: "
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 45,
+        "text": "- Start with `find_symbol` or `grep` to locate relevant code, then `read_file` to read it.",
+        "context_function": null,
+        "context_snippet": "   42: ## Guidelines\n   43: \n   44: - Request 3-8 observations. Be targeted, not exhaustive.\n>> 45: - Start with `find_symbol` or `grep` to locate relevant code, then `read_file` to read it.\n   46: - If you can identify the right file from the tree, go straight to `read_file`.\n   47: - For conceptual questions, use `grep` to find where the concept appears in code.\n   48: "
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 34,
+        "text": "| `find_symbol` | Find where a class/function is defined | `symbol` |",
+        "context_function": null,
+        "context_snippet": "   31: | `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: {default_glob}) |\n   32: | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |\n   33: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n>> 34: | `find_symbol` | Find where a class/function is defined | `symbol` |\n   35: | `find_usages` | Find where a symbol is used | `symbol` |\n   36: | `file_imports` | Extract imports from a file | `file_path` |\n   37: "
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 56,
+        "text": "- Use `find_symbol` to locate definitions referenced in the belief.",
+        "context_function": null,
+        "context_snippet": "   53: - If the initial code context already covers the claim, request observations that would \\\n   54: confirm related behavior (callers, tests, configuration).\n   55: - Use `find_usages` to trace how functions/classes are actually used.\n>> 56: - Use `find_symbol` to locate definitions referenced in the belief.\n   57: - If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.\n   58: \n   59: Now output your observation requests as JSON:"
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 57,
+        "text": "- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.",
+        "context_function": null,
+        "context_snippet": "   54: confirm related behavior (callers, tests, configuration).\n   55: - Use `find_usages` to trace how functions/classes are actually used.\n   56: - Use `find_symbol` to locate definitions referenced in the belief.\n>> 57: - If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.\n   58: \n   59: Now output your observation requests as JSON:\n   60: \"\"\""
+      }
+    ],
+    "test_callers": [],
+    "production_count": 12,
+    "test_count": 0,
+    "total_count": 12
+  },
+  "file_imports_callers": {
+    "symbol": "file_imports",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 263,
+        "text": "async def file_imports(",
+        "context_function": "find_usages",
+        "context_snippet": "   260:         return {\"error\": str(e), \"symbol\": symbol}\n   261: \n   262: \n>> 263: async def file_imports(\n   264:     file_path: str, repo_path: str, lang: LanguageProfile | None = None,\n   265: ) -> dict[str, Any]:\n   266:     \"\"\""
+      },
+      {
+        "file": "ftl_code_expert/observations.py",
+        "line": 327,
+        "text": "\"file_imports\": file_imports,",
+        "context_function": "file_imports",
+        "context_snippet": "   324:     \"list_directory\": list_directory,\n   325:     \"find_symbol\": find_symbol,\n   326:     \"find_usages\": find_usages,\n>> 327:     \"file_imports\": file_imports,\n   328: }\n   329: \n   330: "
+      },
+      {
+        "file": "ftl_code_expert/prompts/observe.py",
+        "line": 29,
+        "text": "| `file_imports` | Extract imports from a file | `file_path` |",
+        "context_function": null,
+        "context_snippet": "   26: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n   27: | `find_symbol` | Find where a class/function is defined | `symbol` |\n   28: | `find_usages` | Find where a symbol is used | `symbol` |\n>> 29: | `file_imports` | Extract imports from a file | `file_path` |\n   30: \n   31: ## Output Format\n   32: "
+      },
+      {
+        "file": "ftl_code_expert/prompts/verify.py",
+        "line": 36,
+        "text": "| `file_imports` | Extract imports from a file | `file_path` |",
+        "context_function": null,
+        "context_snippet": "   33: | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |\n   34: | `find_symbol` | Find where a class/function is defined | `symbol` |\n   35: | `find_usages` | Find where a symbol is used | `symbol` |\n>> 36: | `file_imports` | Extract imports from a file | `file_path` |\n   37: \n   38: ## Output Format\n   39: "
+      }
+    ],
+    "test_callers": [],
+    "production_count": 4,
+    "test_count": 0,
+    "total_count": 4
+  },
+  "list_source_files_body": {
+    "function": "list_source_files",
+    "file": "ftl_code_expert/git_utils.py",
+    "start_line": 205,
+    "end_line": 225,
+    "source": "def list_source_files(repo_path: str) -> list[str]:\n    \"\"\"List all tracked source files using git ls-files.\n\n    Filters out binary files by extension. Returns paths relative to repo root.\n    \"\"\"\n    result = subprocess.run(\n        [\"git\", \"ls-files\"],\n        capture_output=True, text=True, cwd=repo_path,\n    )\n    if result.returncode != 0:\n        return []\n    files = []\n    for line in result.stdout.splitlines():\n        line = line.strip()\n        if not line:\n            continue\n        ext = os.path.splitext(line)[1].lower()\n        if ext not in BINARY_EXTENSIONS:\n            files.append(line)\n    files.sort(key=lambda p: (p.count(\"/\"), p))\n    return files"
+  },
+  "parse_observation_requests_body": {
+    "function": "parse_observation_requests",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 385,
+    "end_line": 403,
+    "source": "def parse_observation_requests(response: str) -> list[dict]:\n    \"\"\"Parse observation requests from model response.\"\"\"\n    json_match = re.search(r\"```json\\n(.*?)\\n```\", response, re.DOTALL)\n    if json_match:\n        try:\n            result = json.loads(json_match.group(1))\n            if isinstance(result, list):\n                return result\n        except json.JSONDecodeError:\n            pass\n\n    try:\n        result = json.loads(response.strip())\n        if isinstance(result, list):\n            return result\n    except json.JSONDecodeError:\n        pass\n\n    return []"
+  },
+  "execute_observations_body": {
+    "error": "No function found at 'execute_observations'",
+    "file": "ftl_code_expert/observations.py"
+  },
+  "verify_prompt_template": {
+    "error": "No function found at 'build_verify_prompt'",
+    "file": "ftl_code_expert/prompts/verify.py"
+  },
+  "observe_prompt_full": {
+    "function": "build_observe_prompt",
+    "file": "ftl_code_expert/prompts/observe.py",
+    "start_line": 53,
+    "end_line": 55,
+    "source": "def build_observe_prompt(question: str, tree: str, default_glob: str = \"*.py\") -> str:\n    \"\"\"Build the observation-gathering prompt.\"\"\"\n    return OBSERVE_PROMPT.format(question=question, tree=tree, default_glob=default_glob)"
+  },
+  "language_tests": {
+    "source_file": "ftl_code_expert/language.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "git_utils_tests": {
+    "source_file": "ftl_code_expert/git_utils.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "observations_tests": {
+    "source_file": "ftl_code_expert/observations.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "cli_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "detect_language_callers": {
+    "symbol": "detect_language",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 17,
+        "text": "from .language import detect_language, PYTHON",
+        "context_function": null,
+        "context_snippet": "   14: \n   15: import click\n   16: \n>> 17: from .language import detect_language, PYTHON\n   18: from .git_utils import (\n   19:     commits_since_checkpoint,\n   20:     extract_symbol,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 98,
+        "text": "ctx.obj[\"lang\"] = detect_language(_get_repo(ctx))",
+        "context_function": "_get_lang",
+        "context_snippet": "   95: def _get_lang(ctx):\n   96:     \"\"\"Lazily detect and cache the repo's primary language.\"\"\"\n   97:     if \"lang\" not in ctx.obj or ctx.obj[\"lang\"] is None:\n>> 98:         ctx.obj[\"lang\"] = detect_language(_get_repo(ctx))\n   99:     return ctx.obj[\"lang\"]\n   100: \n   101: "
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1120,
+        "text": "lang = detect_language(repo_path)",
+        "context_function": "_run_general_topic_async",
+        "context_snippet": "   1117:     \"\"\"Run a general topic's full observe-then-explain pipeline asynchronously.\"\"\"\n   1118:     from .prompts.common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS\n   1119: \n>> 1120:     lang = detect_language(repo_path)\n   1121:     tree = get_repo_structure(repo_path, max_depth=2)\n   1122:     observe_prompt = build_observe_prompt(\n   1123:         question=topic.title, tree=tree, default_glob=lang.source_globs[0],"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1185,
+        "text": "lang = lang or detect_language(repo_path)",
+        "context_function": "_explore_topics_concurrent",
+        "context_snippet": "   1182: \n   1183: async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent, lang=None):\n   1184:     \"\"\"Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception.\"\"\"\n>> 1185:     lang = lang or detect_language(repo_path)\n   1186:     sem = asyncio.Semaphore(max_concurrent)\n   1187: \n   1188:     async def _do_topic(topic):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2517,
+        "text": "lang = detect_language(repo_path)",
+        "context_function": "generate_spec",
+        "context_snippet": "   2514:     click.echo(f\"Found {len(beliefs)} matching beliefs\", err=True)\n   2515: \n   2516:     # Gather source files\n>> 2517:     lang = detect_language(repo_path)\n   2518:     src_files = _gather_source_files(repo_path, beliefs, lang=lang)\n   2519: \n   2520:     # Add explicit source files (expand directories to source files)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3121,
+        "text": "lang = lang or detect_language(repo_path)",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3118:     \"\"\"\n   3119:     from .observations import find_usages, grep, read_file\n   3120: \n>> 3121:     lang = lang or detect_language(repo_path)\n   3122: \n   3123:     bid = belief[\"id\"]\n   3124:     source = node.get(\"source\", \"\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3177,
+        "text": "lang = lang or detect_language(repo_path)",
+        "context_function": "_verify_belief_with_observations",
+        "context_snippet": "   3174:     3. Execute LLM-requested observations in parallel\n   3175:     4. Return combined context\n   3176:     \"\"\"\n>> 3177:     lang = lang or detect_language(repo_path)\n   3178:     bid = belief[\"id\"]\n   3179: \n   3180:     src_file, auto_obs = await _auto_gather_verify_observations("
+      },
+      {
+        "file": "ftl_code_expert/language.py",
+        "line": 128,
+        "text": "def detect_language(repo_path: str) -> LanguageProfile:",
+        "context_function": "module_name_from_path",
+        "context_snippet": "   125: }\n   126: \n   127: \n>> 128: def detect_language(repo_path: str) -> LanguageProfile:\n   129:     \"\"\"Auto-detect the repo's primary language. Falls back to Python.\"\"\"\n   130:     for config_file, lang_name in _CONFIG_TO_LANGUAGE.items():\n   131:         if os.path.isfile(os.path.join(repo_path, config_file)):"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 8,
+    "test_count": 0,
+    "total_count": 8
+  },
+  "repo_path_to_entry_callers": {
+    "symbol": "_repo_path_to_entry_pattern",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1215,
+        "text": "def _repo_path_to_entry_pattern(repo_path: str, lang=None) -> str:",
+        "context_function": "_do_topic",
+        "context_snippet": "   1212:     )\n   1213: \n   1214: \n>> 1215: def _repo_path_to_entry_pattern(repo_path: str, lang=None) -> str:\n   1216:     \"\"\"Convert a repo file path to the entry-name pattern used in belief sources.\n   1217: \n   1218:     Example: src/redhat_agents/capabilities/dataverse/mart_proxy.py"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1235,
+        "text": "patterns = {_repo_path_to_entry_pattern(f, lang=lang) for f in deleted_files}",
+        "context_function": "_retract_beliefs_for_deleted_files",
+        "context_snippet": "   1232:         return\n   1233: \n   1234:     # Build entry-name patterns for deleted files\n>> 1235:     patterns = {_repo_path_to_entry_pattern(f, lang=lang) for f in deleted_files}\n   1236: \n   1237:     # Parse beliefs and find those sourced from deleted files\n   1238:     beliefs = _parse_beliefs_md(beliefs_path)"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "retract_beliefs_callers": {
+    "symbol": "_retract_beliefs_for_deleted_files",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1228,
+        "text": "def _retract_beliefs_for_deleted_files(deleted_files: set[str], lang=None) -> None:",
+        "context_function": "_repo_path_to_entry_pattern",
+        "context_snippet": "   1225:     return repo_path.replace(\"/\", \"-\").replace(\"\\\\\", \"-\")\n   1226: \n   1227: \n>> 1228: def _retract_beliefs_for_deleted_files(deleted_files: set[str], lang=None) -> None:\n   1229:     \"\"\"Find beliefs sourced from deleted files and retract them via reasons.\"\"\"\n   1230:     beliefs_path = Path(\"beliefs.md\")\n   1231:     if not beliefs_path.exists():"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1375,
+        "text": "_retract_beliefs_for_deleted_files(deleted_files, lang=_get_lang(ctx))",
+        "context_function": "walk_commits",
+        "context_snippet": "   1372: \n   1373:     # Retract beliefs sourced from deleted files\n   1374:     if deleted_files:\n>> 1375:         _retract_beliefs_for_deleted_files(deleted_files, lang=_get_lang(ctx))\n   1376: \n   1377:     if not check_model_available(model):\n   1378:         click.echo(f\"Error: Model '{model}' CLI not available\", err=True)"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "gather_source_files_callers": {
+    "symbol": "_gather_source_files",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2427,
+        "text": "def _gather_source_files(repo_path: str, beliefs: list[dict], lang=None) -> dict[str, str]:",
+        "context_function": "_gather_beliefs_for_spec",
+        "context_snippet": "   2424:     return matched\n   2425: \n   2426: \n>> 2427: def _gather_source_files(repo_path: str, beliefs: list[dict], lang=None) -> dict[str, str]:\n   2428:     \"\"\"Read source files referenced by beliefs.\"\"\"\n   2429:     lang = lang or PYTHON\n   2430:     file_paths = set()"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2518,
+        "text": "src_files = _gather_source_files(repo_path, beliefs, lang=lang)",
+        "context_function": "generate_spec",
+        "context_snippet": "   2515: \n   2516:     # Gather source files\n   2517:     lang = detect_language(repo_path)\n>> 2518:     src_files = _gather_source_files(repo_path, beliefs, lang=lang)\n   2519: \n   2520:     # Add explicit source files (expand directories to source files)\n   2521:     for sf in source_files:"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "format_source_code_callers": {
+    "symbol": "_format_source_code",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2467,
+        "text": "def _format_source_code(source_files: dict[str, str], lang=None) -> str:",
+        "context_function": "_format_beliefs_for_prompt",
+        "context_snippet": "   2464:     return \"\\n\".join(lines)\n   2465: \n   2466: \n>> 2467: def _format_source_code(source_files: dict[str, str], lang=None) -> str:\n   2468:     \"\"\"Format source files into prompt-friendly text.\"\"\"\n   2469:     lang = lang or PYTHON\n   2470:     if not source_files:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2562,
+        "text": "source_code = _format_source_code(src_files, lang=lang)",
+        "context_function": "generate_spec",
+        "context_snippet": "   2559: \n   2560:     # Build prompt\n   2561:     beliefs_text = _format_beliefs_for_prompt(beliefs)\n>> 2562:     source_code = _format_source_code(src_files, lang=lang)\n   2563:     file_list = \", \".join(sorted(src_files.keys())) if src_files else \"(none)\"\n   2564: \n   2565:     config = _load_config()"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "explore_concurrent_callers": {
+    "symbol": "_explore_topics_concurrent",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 810,
+        "text": "_explore_topics_concurrent(topics_only, model, abs_repo, timeout, parallel)",
+        "context_function": "explore",
+        "context_snippet": "   807:     if parallel > 1 and len(topics_only) > 1:\n   808:         click.echo(f\"\\nExploring {len(topics_only)} topics (parallel={parallel})...\", err=True)\n   809:         results = asyncio.run(\n>> 810:             _explore_topics_concurrent(topics_only, model, abs_repo, timeout, parallel)\n   811:         )\n   812:         for r in results:\n   813:             if isinstance(r, Exception):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 884,
+        "text": "_explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)",
+        "context_function": "_explore_loop",
+        "context_snippet": "   881: \n   882:         if parallel > 1 and len(batch) > 1:\n   883:             results = asyncio.run(\n>> 884:                 _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)\n   885:             )\n   886:             for r in results:\n   887:                 if isinstance(r, Exception):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1183,
+        "text": "async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent, lang=None):",
+        "context_function": "_run_general_topic",
+        "context_snippet": "   1180:     _finalize_topic(ctx, entry_name, entry_title, source, result)\n   1181: \n   1182: \n>> 1183: async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent, lang=None):\n   1184:     \"\"\"Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception.\"\"\"\n   1185:     lang = lang or detect_language(repo_path)\n   1186:     sem = asyncio.Semaphore(max_concurrent)"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1412,
+        "text": "_explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)",
+        "context_function": "walk_commits",
+        "context_snippet": "   1409: \n   1410:         if parallel > 1 and len(batch) > 1:\n   1411:             results = asyncio.run(\n>> 1412:                 _explore_topics_concurrent(batch, model, abs_repo, timeout, parallel)\n   1413:             )\n   1414:             for r in results:\n   1415:                 if isinstance(r, Exception):"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3878,
+        "text": "_explore_topics_concurrent(topics, model, abs_repo, timeout, parallel)",
+        "context_function": "research",
+        "context_snippet": "   3875:     click.echo(f\"\\nExploring {len(topics)} file(s)...\", err=True)\n   3876:     if parallel > 1 and len(topics) > 1:\n   3877:         batch_results = asyncio.run(\n>> 3878:             _explore_topics_concurrent(topics, model, abs_repo, timeout, parallel)\n   3879:         )\n   3880:         for r in batch_results:\n   3881:             if isinstance(r, Exception):"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 5,
+    "test_count": 0,
+    "total_count": 5
+  },
+  "build_function_prompt_callers": {
+    "symbol": "build_function_prompt",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 46,
+        "text": "build_function_prompt,",
+        "context_function": null,
+        "context_snippet": "   43:     build_diff_prompt,\n   44:     build_diff_summary_prompt,\n   45:     build_file_prompt,\n>> 46:     build_function_prompt,\n   47:     build_observe_prompt,\n   48:     build_repo_prompt,\n   49:     build_scan_prompt,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 510,
+        "text": "prompt = build_function_prompt(",
+        "context_function": "explain_function",
+        "context_snippet": "   507:     related_tests = find_related_tests(abs_path, abs_repo, symbol_name, lang=lang)\n   508:     rel_path = os.path.relpath(abs_path, abs_repo)\n   509: \n>> 510:     prompt = build_function_prompt(\n   511:         file_path=rel_path,\n   512:         symbol_name=symbol_name,\n   513:         symbol_source=symbol_source,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 971,
+        "text": "prompt = build_function_prompt(",
+        "context_function": "_prepare_function_topic",
+        "context_snippet": "   968:     related_tests = find_related_tests(abs_path, repo_path, symbol_name, lang=lang)\n   969:     rel_path = os.path.relpath(abs_path, repo_path)\n   970: \n>> 971:     prompt = build_function_prompt(\n   972:         file_path=rel_path,\n   973:         symbol_name=symbol_name,\n   974:         symbol_source=symbol_source,"
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 6,
+        "text": "from .function import build_function_prompt",
+        "context_function": null,
+        "context_snippet": "   3: from .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS\n   4: from .diff import build_diff_prompt, build_diff_summary_prompt\n   5: from .file import build_file_prompt\n>> 6: from .function import build_function_prompt\n   7: from .observe import build_observe_prompt\n   8: from .derive import DERIVE_BELIEFS_PROMPT\n   9: from .propose import PROPOSE_BELIEFS_CODE"
+      },
+      {
+        "file": "ftl_code_expert/prompts/__init__.py",
+        "line": 31,
+        "text": "\"build_function_prompt\",",
+        "context_function": null,
+        "context_snippet": "   28:     \"build_diff_prompt\",\n   29:     \"build_diff_summary_prompt\",\n   30:     \"build_file_prompt\",\n>> 31:     \"build_function_prompt\",\n   32:     \"build_observe_prompt\",\n   33:     \"build_repo_prompt\",\n   34:     \"build_scan_prompt\","
+      },
+      {
+        "file": "ftl_code_expert/prompts/function.py",
+        "line": 6,
+        "text": "def build_function_prompt(",
+        "context_function": null,
+        "context_snippet": "   3: from .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS\n   4: \n   5: \n>> 6: def build_function_prompt(\n   7:     file_path: str,\n   8:     symbol_name: str,\n   9:     symbol_source: str,"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 6,
+    "test_count": 0,
+    "total_count": 6
+  },
+  "auto_gather_verify_callers": {
+    "symbol": "_auto_gather_verify_observations",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3107,
+        "text": "async def _auto_gather_verify_observations(",
+        "context_function": "_gather_confirmation_context",
+        "context_snippet": "   3104:     return contexts\n   3105: \n   3106: \n>> 3107: async def _auto_gather_verify_observations(\n   3108:     belief: dict,\n   3109:     node: dict,\n   3110:     repo_path: str,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3180,
+        "text": "src_file, auto_obs = await _auto_gather_verify_observations(",
+        "context_function": "_verify_belief_with_observations",
+        "context_snippet": "   3177:     lang = lang or detect_language(repo_path)\n   3178:     bid = belief[\"id\"]\n   3179: \n>> 3180:     src_file, auto_obs = await _auto_gather_verify_observations(\n   3181:         belief, node, repo_path, project_dir, lang=lang,\n   3182:     )\n   3183: "
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  },
+  "verify_belief_callers": {
+    "symbol": "_verify_belief_with_observations",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3161,
+        "text": "async def _verify_belief_with_observations(",
+        "context_function": "_auto_gather_verify_observations",
+        "context_snippet": "   3158:     return src_file, obs\n   3159: \n   3160: \n>> 3161: async def _verify_belief_with_observations(\n   3162:     belief: dict,\n   3163:     node: dict,\n   3164:     repo_path: str,"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3262,
+        "text": "_verify_belief_with_observations(",
+        "context_function": "_gather_verify_contexts",
+        "context_snippet": "   3259: ) -> dict[str, str]:\n   3260:     \"\"\"Gather observation-based code context for verifying beliefs.\"\"\"\n   3261:     tasks = [\n>> 3262:         _verify_belief_with_observations(\n   3263:             b, nodes.get(b[\"id\"], {}), repo_path, project_dir, model, timeout,\n   3264:         )\n   3265:         for b in beliefs"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 2,
+    "test_count": 0,
+    "total_count": 2
+  }
+}

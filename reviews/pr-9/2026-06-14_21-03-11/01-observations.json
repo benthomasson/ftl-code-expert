@@ -1,0 +1,150 @@
+{
+  "explore_topics_concurrent_body": {
+    "function": "_explore_topics_concurrent",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1137,
+    "end_line": 1165,
+    "source": "async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent):\n    \"\"\"Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception.\"\"\"\n    sem = asyncio.Semaphore(max_concurrent)\n\n    async def _do_topic(topic):\n        async with sem:\n            click.echo(f\"Explaining [{topic.kind}] {topic.target} with {model}...\", err=True)\n            if topic.kind == \"general\":\n                result, entry_name, entry_title, source = await _run_general_topic_async(\n                    topic, model, repo_path, timeout,\n                )\n                return topic, result, entry_name, entry_title, source\n\n            prepare_fn = _PREPARE_DISPATCH.get(topic.kind)\n            if not prepare_fn:\n                raise ValueError(f\"Unknown topic kind: {topic.kind}\")\n\n            prepared = prepare_fn(topic, repo_path)\n            if prepared is None:\n                return None\n\n            prompt, entry_name, entry_title, source = prepared\n            result = await invoke(prompt, model, timeout=timeout)\n            return topic, result, entry_name, entry_title, source\n\n    return await asyncio.gather(\n        *[_do_topic(t) for t in topics],\n        return_exceptions=True,\n    )"
+  },
+  "finalize_topic_body": {
+    "function": "_finalize_topic",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 997,
+    "end_line": 1002,
+    "source": "def _finalize_topic(ctx, entry_name, entry_title, source, result):\n    \"\"\"Write entry, enqueue new topics, and report beliefs from a completed exploration.\"\"\"\n    _create_entry(entry_name, entry_title, result)\n    _enqueue_topics(result, source=source, project_dir=_get_project_dir(ctx))\n    _report_beliefs(result)\n    _emit(ctx, result)"
+  },
+  "run_file_topic_body": {
+    "function": "_run_file_topic",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1013,
+    "end_line": 1025,
+    "source": "def _run_file_topic(ctx, topic, model, repo_path):\n    \"\"\"Handle a file exploration topic.\"\"\"\n    prepared = _prepare_file_topic(topic, repo_path)\n    if prepared is None:\n        return\n    prompt, entry_name, entry_title, source = prepared\n    click.echo(f\"Explaining {topic.target} with {model}...\", err=True)\n    try:\n        result = asyncio.run(invoke(prompt, model, timeout=ctx.obj[\"timeout\"]))\n    except Exception as e:\n        click.echo(f\"Error: {e}\", err=True)\n        sys.exit(1)\n    _finalize_topic(ctx, entry_name, entry_title, source, result)"
+  },
+  "load_network_body": {
+    "function": "_load_network",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2705,
+    "end_line": 2718,
+    "source": "def _load_network() -> dict:\n    \"\"\"Load network.json (exported from reasons).\"\"\"\n    network_path = Path(\"network.json\")\n    if not network_path.exists():\n        # Try exporting from reasons\n        if _has_reasons():\n            import subprocess\n            result = subprocess.run(\n                [\"reasons\", \"export\"], capture_output=True, text=True,\n            )\n            if result.returncode == 0:\n                return json.loads(result.stdout)\n        return {\"nodes\": {}}\n    return json.loads(network_path.read_text())"
+  },
+  "invoke_concurrent_sync_body": {
+    "error": "No function found at 'invoke_concurrent_sync'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "propose_beliefs_body": {
+    "function": "propose_beliefs",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 1389,
+    "end_line": 1586,
+    "source": "@cli.command(\"propose-beliefs\")\n@click.option(\"--batch-size\", type=int, default=5, help=\"Entries per LLM batch (default: 5)\")\n@click.option(\"--output\", default=\"proposed-beliefs.md\", help=\"Output file\")\n@click.option(\"--model\", \"-m\", default=None, help=\"Override model\")\n@click.option(\"--entry\", \"entry_paths\", multiple=True, type=click.Path(exists=True),\n              help=\"Process specific entry file(s) instead of all entries\")\n@click.option(\"--all\", \"process_all\", is_flag=True,\n              help=\"Re-process all entries (ignore processed tracking)\")\n@click.option(\"--auto\", \"auto_accept\", is_flag=True, default=False,\n              help=\"Automatically accept all proposed beliefs (no review step)\")\n@click.option(\"--since\", default=None,\n              help=\"Only process entries from this date onward (YYYY-MM-DD)\")\n@click.pass_context\ndef propose_beliefs(ctx, batch_size, output, model, entry_paths, process_all, auto_accept, since):\n    \"\"\"Extract candidate beliefs from entries for human review.\"\"\"\n    from .caffeinate import hold as _caffeinate\n    _caffeinate()\n    if model is None:\n        model = ctx.obj[\"model\"]\n    timeout = ctx.obj[\"timeout\"]\n\n    if not check_model_available(model):\n        click.echo(f\"Error: Model '{model}' CLI not available\", err=True)\n        sys.exit(1)\n\n    # Collect entries\n    if entry_paths:\n        entries = [Path(p) for p in entry_paths]\n    else:\n        input_dir = Path(\"entries\")\n        if not input_dir.exists():\n            click.echo(\"No entries/ directory found. Run explorations first.\")\n            sys.exit(1)\n        entries = sorted(input_dir.rglob(\"*.md\"))\n\n    if not entries:\n        click.echo(\"No .md files found.\")\n        return\n\n    # Filter by date if --since provided\n    if since:\n        before = len(entries)\n        entries = [e for e in entries if (_entry_date(e) or \"\") >= since]\n        click.echo(f\"Filtered to {len(entries)} entries since {since} (from {before} total)\", err=True)\n        if not entries:\n            click.echo(\"No entries found since that date.\")\n            return\n\n    # Filter out already-processed entries (unless --all or --entry)\n    processed_path = Path(PROJECT_DIR) / \"proposed-entries.json\"\n    processed = _load_processed(processed_path)\n    if not process_all and not entry_paths:\n        total = len(entries)\n        entries = _filter_unprocessed(entries, processed)\n        skipped = total - len(entries)\n        if skipped:\n            click.echo(f\"Skipping {skipped} already-processed entries (use --all to reprocess)\")\n        if not entries:\n            click.echo(\"No new entries to process.\")\n            return\n\n    # Load existing beliefs (IDs + text + source) for dedup context\n    existing_beliefs = _load_existing_beliefs(Path(\"beliefs.md\"))\n    existing_ids = {b[\"id\"] for b in existing_beliefs}\n\n    if existing_ids:\n        click.echo(f\"Found {len(existing_ids)} existing beliefs (will skip duplicates)\")\n\n    # Compute belief embeddings once for all batches (if fastembed available)\n    belief_vectors = None\n    if existing_beliefs and _has_embeddings():\n        click.echo(\"Computing belief embeddings for semantic dedup...\")\n        cache_path = Path(PROJECT_DIR) / \"belief-vectors.json\"\n        belief_vectors = _get_belief_embeddings(existing_beliefs, cache_path)\n        click.echo(f\"  {len(belief_vectors)} belief vectors ready\")\n    elif existing_beliefs:\n        click.echo(\"(install fastembed for semantic dedup: uv pip install 'ftl-code-expert[embeddings]')\")\n\n    click.echo(f\"Reading {len(entries)} entries...\")\n\n    # Batch entries \u2014 track paths per batch for relevance scoring\n    batches = []\n    batch_paths = []\n    current_batch = []\n    current_paths = []\n    for entry_path in entries:\n        content = entry_path.read_text()\n        if len(content) > 10000:\n            content = content[:10000] + \"\\n[Truncated]\"\n        current_batch.append(f\"--- FILE: {entry_path} ---\\n{content}\")\n        current_paths.append(str(entry_path))\n        if len(current_batch) >= batch_size:\n            batches.append(\"\\n\\n\".join(current_batch))\n            batch_paths.append(current_paths)\n            current_batch = []\n            current_paths = []\n    if current_batch:\n        batches.append(\"\\n\\n\".join(current_batch))\n        batch_paths.append(current_paths)\n\n    parallel = ctx.obj[\"parallel\"]\n    click.echo(f\"Processing {len(batches)} batches (batch size: {batch_size}, parallel: {parallel})...\")\n\n    prompts = []\n    for i, batch_text in enumerate(batches):\n        existing_context = _build_dedup_context(\n            existing_beliefs, batch_paths[i], batch_text,\n            belief_vectors=belief_vectors,\n        )\n        prompts.append(PROPOSE_BELIEFS_CODE.format(entries=batch_text) + existing_context)\n\n    results = invoke_concurrent_sync(prompts, model=model, timeout=timeout, max_concurrent=parallel)\n\n    all_proposals = []\n    for i, result in enumerate(results):\n        if isinstance(result, Exception):\n            click.echo(f\"  ERROR in batch {i + 1}: {result}\")\n        else:\n            click.echo(f\"  Batch {i + 1}/{len(batches)} done\")\n            all_proposals.append(result)\n\n    # Filter out proposals whose IDs already exist\n    filtered_proposals = []\n    skipped = 0\n    for proposal in all_proposals:\n        lines = proposal.split(\"\\n\")\n        filtered_lines = []\n        skip_until_next = False\n        for line in lines:\n            m = re.match(r\"^### \\[?(?:ACCEPT|REJECT)\\]? (\\S+)\", line)\n            if m:\n                belief_id = m.group(1)\n                if belief_id in existing_ids:\n                    skip_until_next = True\n                    skipped += 1\n                    continue\n                else:\n                    skip_until_next = False\n            if skip_until_next:\n                # Skip lines until the next ### header\n                if line.startswith(\"### \"):\n                    skip_until_next = False\n                    filtered_lines.append(line)\n                continue\n            filtered_lines.append(line)\n        filtered_proposals.append(\"\\n\".join(filtered_lines))\n\n    if skipped:\n        click.echo(f\"  Filtered {skipped} already-accepted beliefs\")\n\n    # Record processed entries\n    _save_processed(processed_path, entries, processed)\n\n    if auto_accept:\n        # Parse proposals and accept all directly\n        accept_pattern = re.compile(\n            r\"^### \\[?(?:ACCEPT(?:/REJECT)?|REJECT)\\]? (\\S+)\\n(.+?)\\n- Source: (.+?)(?:\\n|$)\",\n            re.MULTILINE,\n        )\n        matches = []\n        for proposal in filtered_proposals:\n            matches.extend(accept_pattern.findall(proposal))\n        if not matches:\n            click.echo(\"No beliefs extracted from proposals.\")\n            return\n        click.echo(f\"\\nAuto-accepting {len(matches)} beliefs...\")\n        _accept_proposals(matches)\n        return\n\n    # Write proposals file (append if it already exists)\n    source_desc = \", \".join(str(e) for e in entries) if entry_paths else f\"{len(entries)} entries from entries/\"\n    output_path = Path(output)\n    if output_path.exists() and output_path.stat().st_size > 0:\n        with output_path.open(\"a\") as f:\n            f.write(f\"\\n---\\n\\n\")\n            f.write(f\"**Generated:** {date.today().isoformat()}\\n\")\n            f.write(f\"**Source:** {source_desc}\\n\")\n            f.write(f\"**Model:** {model}\\n\\n\")\n            for proposal in filtered_proposals:\n                f.write(proposal)\n                f.write(\"\\n\\n\")\n        click.echo(f\"\\nAppended to {output_path}\")\n    else:\n        with output_path.open(\"w\") as f:\n            f.write(\"# Proposed Beliefs\\n\\n\")\n            f.write(\"Edit each entry: change `[ACCEPT/REJECT]` to `[ACCEPT]` or `[REJECT]`.\\n\")\n            f.write(\"Then run: `code-expert accept-beliefs`\\n\\n\")\n            f.write(\"---\\n\\n\")\n            f.write(f\"**Generated:** {date.today().isoformat()}\\n\")\n            f.write(f\"**Source:** {source_desc}\\n\")\n            f.write(f\"**Model:** {model}\\n\\n\")\n            for proposal in filtered_proposals:\n                f.write(proposal)\n                f.write(\"\\n\\n\")\n        click.echo(f\"\\nWrote {output_path}\")\n\n    click.echo(\"Review the file, mark entries as [ACCEPT] or [REJECT], then run:\")\n    click.echo(\"  code-expert accept-beliefs\")"
+  },
+  "topic_class": {
+    "class_name": "Topic",
+    "file": "ftl_code_expert/topics.py",
+    "bases": [],
+    "own_init_signature": null,
+    "base_init_signatures": {}
+  },
+  "get_repo_structure_body": {
+    "error": "No function found at 'get_repo_structure'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "research_tests": {
+    "source_file": "ftl_code_expert/cli.py",
+    "test_files": [],
+    "test_count": 0
+  },
+  "cli_imports": {
+    "file": "ftl_code_expert/cli.py",
+    "imports": [
+      "asyncio",
+      "json",
+      "os",
+      "re",
+      "shutil",
+      "subprocess",
+      "sys",
+      "click"
+    ],
+    "from_imports": [
+      {
+        "module": "datetime",
+        "names": [
+          "date",
+          "datetime"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "git_utils",
+        "names": [
+          "commits_since_checkpoint",
+          "extract_symbol",
+          "find_related_tests",
+          "get_commit_log",
+          "get_diff",
+          "get_diff_since",
+          "get_diff_since_commit",
+          "get_file_content",
+          "get_imports",
+          "get_repo_structure",
+          "list_commits_with_files",
+          "load_diff_checkpoint",
+          "save_diff_checkpoint"
+        ]
+      },
+      {
+        "module": "llm",
+        "names": [
+          "check_model_available",
+          "invoke",
+          "invoke_concurrent",
+          "invoke_concurrent_sync",
+          "invoke_sync"
+        ]
+      },
+      {
+        "module": "observations",
+        "names": [
+          "parse_observation_requests",
+          "run_observations"
+        ]
+      },
+      {
+        "module": "prompts",
+        "names": [
+          "PROPOSE_BELIEFS_CODE",
+          "RESEARCH_INFER_FILES_PROMPT",
+          "REVIEW_PROMPT",
+          "build_diff_prompt",
+          "build_diff_summary_prompt",
+          "build_file_prompt",
+          "build_function_prompt",
+          "build_observe_prompt",
+          "build_repo_prompt",
+          "build_scan_prompt"
+        ]
+      },
+      {
+        "module": "topics",
+        "names": [
+          "add_topics",
+          "load_queue",
+          "parse_topics_from_response",
+          "pending_count",
+          "pop_at",
+          "pop_batch",
+          "pop_multiple",
+          "pop_next",
+          "skip_topic"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"Command-line interface for code expert.\"\"\"\n\nimport asyncio\nimport json\nimport os\nimport re\nimport shutil\nimport subprocess\nimport sys\nfrom datetime import date, datetime\nfrom pathlib import Path\n\nimport click\n\nfrom .git_utils import (\n    commits_since_checkpoint,\n    extract_symbol,\n    find_related_tests,\n    get_commit_log,\n    get_diff,\n    get_diff_since,\n    get_diff_since_commit,\n    get_file_content,\n    get_imports,\n    get_repo_structure,\n    list_commits_with_files,\n    load_diff_checkpoint,\n    save_diff_checkpoint,\n)\nfrom .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync\nfrom .observations import parse_observation_requests, run_observations\nfrom .prompts import (\n    PROPOSE_BELIEFS_CODE,\n    RESEARCH_INFER_FILES_PROMPT,\n    REVIEW_PROMPT,\n    build_diff_prompt,\n    build_diff_summary_prompt,\n    build_file_prompt,\n    build_function_prompt,\n    build_observe_prompt,\n    build_repo_prompt,\n    build_scan_prompt,\n)\nfrom .topics import (\n    add_topics,\n    load_queue,\n    parse_topics_from_response,\n    pending_count,\n    pop_at,\n    pop_batch,\n    pop_multiple,\n    pop_next,\n    skip_topic,\n)\n\nPROJECT_DIR = \".code-expert\"\n\n\n# --- Config helpers ---\n\n\ndef _load_config() -> dict | None:\n    \"\"\"Load .code-expert/config.json if it exists.\"\"\""
+  }
+}

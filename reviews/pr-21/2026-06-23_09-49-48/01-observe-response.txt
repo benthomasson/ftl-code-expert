@@ -1,0 +1,15 @@
+```json
+[
+  {"name": "list_source_files_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/git_utils.py", "function_name": "list_source_files"}},
+  {"name": "add_topics_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/topics.py", "function_name": "add_topics"}},
+  {"name": "topic_class", "tool": "function_body", "params": {"file_path": "ftl_code_expert/topics.py", "function_name": "Topic"}},
+  {"name": "enqueue_topics_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "_enqueue_topics"}},
+  {"name": "scan_command_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "scan"}},
+  {"name": "list_source_files_callers", "tool": "find_callers", "params": {"symbol": "list_source_files"}},
+  {"name": "topic_import_migration", "tool": "symbol_migration", "params": {"old_name": "from .topics import Topic", "new_name": "from .topics import Topic"}},
+  {"name": "add_topics_callers", "tool": "find_callers", "params": {"symbol": "add_topics"}},
+  {"name": "list_source_files_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/git_utils.py"}},
+  {"name": "scan_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "list_source_files_raises", "tool": "raises_analysis", "params": {"file_path": "ftl_code_expert/git_utils.py", "function_name": "list_source_files"}}
+]
+```

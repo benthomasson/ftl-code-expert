@@ -1,0 +1,86 @@
+An elegant, highly robust, and well-designed set of changes. The implementation introduces a sophisticated multi-stage context gathering strategy (auto-gather followed by an LLM-driven observation request loop), while retaining a safe fallback option and fixing a critical data corruption issue.
+
+Here is the structured review of the changes.
+
+---
+
+### ftl_code_expert/cli.py:_reasons_export
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Prevents a critical data-corruption bug. Previously, calling `network_path.write_text(result.stdout)` overrode the `network.json` file (which `reasons export` already writes directly) with a simple CLI status message. Removing this line preserves the actual exported JSON file correctly.
+---
+
+### ftl_code_expert/cli.py:_auto_gather_verify_observations
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The function is robust and defensive. It safely falls back to extracting the source file path via `_extract_source_file` if metadata is missing, replaces and splits token terms cleanly, and uses parallel `asyncio.gather` with `return_exceptions=True` to prevent a single lookup failure from crashing the entire process.
+---
+
+### ftl_code_expert/cli.py:_verify_belief_with_observations
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Executes the multi-step context collection flow seamlessly. It formats `VERIFY_OBSERVE_PROMPT` correctly, handles empty initial context cleanly, and runs any requested observations in parallel. Crucially, it serializes any non-standard observations safely with `json.dumps(..., default=str)` to prevent serialization type errors.
+---
+
+### ftl_code_expert/cli.py:_gather_verify_contexts
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Collects observation contexts for multiple beliefs in a single parallel batch. Any task-level exception is caught individually with `is_instance(result, Exception)` and gracefully printed via `click.echo(..., err=True)` rather than aborting execution for other beliefs in the batch.
+---
+
+### ftl_code_expert/cli.py:verify
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The CLI changes perfectly integrate the new observation loop. The addition of `_reasons_export()` before loading the network prevents stale `network.json` metadata during verification. The `--no-observe` flag correctly falls back to the simpler context gatherer, ensuring flexibility and token optimization.
+---
+
+### ftl_code_expert/prompts/__init__.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: Clean and standard packaging; `VERIFY_OBSERVE_PROMPT` is correctly imported and listed in `__all__`.
+---
+
+### ftl_code_expert/prompts/verify.py
+VERDICT: PASS
+CORRECTNESS: VALID
+SPEC_COMPLIANCE: N/A
+ISSUE_COMPLIANCE: ADDRESSES
+BELIEF_COMPLIANCE: N/A
+TEST_COVERAGE: UNTESTED
+INTEGRATION: WIRED
+REASONING: The newly introduced `VERIFY_OBSERVE_PROMPT` is highly descriptive and provides excellent guidelines to the model on how and when to request observations. The output format instructions use doubled braces (`{{` and `}}`) correctly, which are required for standard Python string formatting interpolation.
+---
+
+### SELF_REVIEW
+LIMITATIONS: There are no unit or integration tests for `cli.py` or `prompts` present in the repository, making exact test coverage assessment impossible. All logic was reviewed purely via static analysis, code paths, and exception handling patterns.
+---

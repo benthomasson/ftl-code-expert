@@ -1,0 +1,479 @@
+You are a senior code reviewer preparing to review code changes.
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index 0cebfd5..ef8c4b9 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -26,20 +26,21 @@ from .git_utils import (
+     list_commits_with_files,
+     load_diff_checkpoint,
+     save_diff_checkpoint,
+ )
+ from .llm import check_model_available, invoke, invoke_concurrent, invoke_concurrent_sync, invoke_sync
+ from .observations import parse_observation_requests, run_observations
+ from .prompts import (
+     PROPOSE_BELIEFS_CODE,
+     RESEARCH_INFER_FILES_PROMPT,
+     REVIEW_PROMPT,
++    VERIFY_OBSERVE_PROMPT,
+     VERIFY_PROMPT,
+     build_diff_prompt,
+     build_diff_summary_prompt,
+     build_file_prompt,
+     build_function_prompt,
+     build_observe_prompt,
+     build_repo_prompt,
+     build_scan_prompt,
+ )
+ from .topics import (
+@@ -2215,21 +2216,20 @@ def _reasons_export():
+     )
+     if result.returncode == 0:
+         beliefs_path.write_text(result.stdout)
+         click.echo(f"Updated {beliefs_path}")
+ 
+     result = subprocess.run(
+         ["reasons", "export"],
+         capture_output=True, text=True,
+     )
+     if result.returncode == 0:
+-        network_path.write_text(result.stdout)
+         click.echo(f"Updated {network_path}")
+ 
+ 
+ def _load_existing_from_reasons() -> list[dict]:
+     """Load existing beliefs from reasons.db via CLI."""
+     result = subprocess.run(
+         ["reasons", "list"],
+         capture_output=True, text=True,
+     )
+     if result.returncode != 0:
+@@ -3053,20 +3053,103 @@ async def _gather_confirmation_context(
+     results = await asyncio.gather(*tasks, return_exceptions=True)
+     contexts: dict[str, str] = {}
+     for i, result in enumerate(results):
+         if isinstance(result, Exception):
+             contexts[beliefs[i]["id"]] = "(error gathering context)"
+         else:
+             contexts[result[0]] = result[1]
+     return contexts
+ 
+ 
++async def _verify_belief_with_observations(
++    belief: dict,
++    node: dict,
++    repo_path: str,
++    project_dir: str | None,
++    model: str,
++    timeout: int,
++) -> tuple[str, str]:
++    """Gather code context for a belief using the observe pattern.
++
++    1. Seed with source_file contents from metadata
++    2. Ask LLM what observations it needs to verify the belief
++    3. Execute observations in parallel
++    4. Return combined context
++    """
++    from .observations import read_file
++
++    bid = belief["id"]
++    source = node.get("source", "")
++
++    seed_context = "(no initial source file)"
++    src_file = (node.get("metadata") or {}).get("source_file")
++    if not src_file:
++        src_file = _extract_source_file(source, project_dir)
++    if src_file:
++        result = await read_file(src_file, repo_path, max_lines=300)
++        if "content" in result:
++            content = result["content"]
++            if len(content) > 4000:
++                content = content[:4000] + "\n... (truncated)"
++            seed_context = f"### {src_file}\n```\n{content}\n```"
++
++    tree = get_repo_structure(repo_path, max_depth=2)
++    observe_prompt = VERIFY_OBSERVE_PROMPT.format(
++        belief_id=bid,
++        belief_text=belief["text"],
++        seed_context=seed_context,
++        tree=tree,
++    )
++    observe_response = await invoke(observe_prompt, model)
++    requested_obs = parse_observation_requests(observe_response)
++
++    obs_results = {}
++    if requested_obs:
++        obs_results = await run_observations(requested_obs, repo_path)
++
++    context_parts: list[str] = []
++    if src_file and seed_context != "(no initial source file)":
++        context_parts.append(seed_context)
++    if obs_results:
++        context_parts.append(
++            f"## Observations\n\n```json\n{json.dumps(obs_results, indent=2, default=str)}\n```"
++        )
++
++    return bid, "\n\n".join(context_parts) if context_parts else "(no code context found)"
++
++
++async def _gather_verify_contexts(
++    beliefs: list[dict],
++    nodes: dict,
++    repo_path: str,
++    project_dir: str | None,
++    model: str,
++    timeout: int,
++) -> dict[str, str]:
++    """Gather observation-based code context for verifying beliefs."""
++    tasks = [
++        _verify_belief_with_observations(
++            b, nodes.get(b["id"], {}), repo_path, project_dir, model, timeout,
++        )
++        for b in beliefs
++    ]
++    results = await asyncio.gather(*tasks, return_exceptions=True)
++    contexts: dict[str, str] = {}
++    for i, result in enumerate(results):
++        if isinstance(result, Exception):
++            click.echo(f"  Error gathering context for {beliefs[i]['id']}: {result}", err=True)
++            contexts[beliefs[i]["id"]] = "(error gathering context)"
++        else:
++            contexts[result[0]] = result[1]
++    return contexts
++
++
+ def _parse_confirmation(response: str) -> dict[str, bool]:
+     """Parse JSON confirmation response from LLM."""
+     m = re.search(r"\{[^{}]*\}", response, re.DOTALL)
+     if m:
+         try:
+             data = json.loads(m.group(0))
+             return {k: bool(v) for k, v in data.items()}
+         except (json.JSONDecodeError, TypeError):
+             pass
+     return {}
+@@ -3728,22 +3811,24 @@ def _parse_verify_response(response: str) -> dict[str, dict]:
+ @click.option("--negative", is_flag=True, default=False,
+               help="Verify negative IN beliefs (bugs, gaps, risks)")
+ @click.option("--all", "verify_all", is_flag=True, default=False,
+               help="Verify all IN beliefs (expensive)")
+ @click.option("--retract", is_flag=True, default=False,
+               help="Retract STALE beliefs via reasons")
+ @click.option("--dry-run", is_flag=True, default=False,
+               help="Show what would be verified without calling LLM")
+ @click.option("--batch-size", type=int, default=10,
+               help="Beliefs per LLM batch (default: 10)")
++@click.option("--no-observe", is_flag=True, default=False,
++              help="Skip observation loop; use simple file read + grep for context")
+ @click.pass_context
+-def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size):
++def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_run, batch_size, no_observe):
+     """Check whether beliefs still hold against current source code.
+ 
+     Reads the current source code for each belief and asks an LLM whether
+     the claim is CONFIRMED, STALE, or INCONCLUSIVE.
+ 
+     Examples:
+         code-expert verify login-audit-always-success-info
+         code-expert verify --category auth
+         code-expert verify --gated
+         code-expert verify --negative --retract
+@@ -3755,20 +3840,24 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
+     model = ctx.obj["model"]
+     timeout = ctx.obj["timeout"]
+     repo_path = _get_repo(ctx)
+     abs_repo = os.path.abspath(repo_path)
+     project_dir = _get_project_dir(ctx)
+ 
+     if not check_model_available(model):
+         click.echo(f"Error: Model '{model}' CLI not available", err=True)
+         sys.exit(1)
+ 
++    # Re-export to ensure fresh metadata (fixes stale network.json)
++    if _has_reasons():
++        _reasons_export()
++
+     # Load belief network
+     try:
+         network = _load_network()
+         nodes = network.get("nodes", {})
+     except Exception as e:
+         click.echo(f"Error loading belief network: {e}", err=True)
+         sys.exit(1)
+ 
+     if not nodes:
+         click.echo("No beliefs found. Run explorations and propose-beliefs first.")
+@@ -3830,23 +3919,28 @@ def verify(ctx, belief_ids, category, gated, negative, verify_all, retract, dry_
+         click.echo("\n--dry-run: stopping before LLM verification.", err=True)
+         return
+ 
+     # Verify in batches
+     all_results: dict[str, dict] = {}
+     batches = [beliefs[i:i + batch_size] for i in range(0, len(beliefs), batch_size)]
+ 
+     for i, batch in enumerate(batches):
+         click.echo(f"\nVerifying batch {i + 1}/{len(batches)} ({len(batch)} beliefs)...", err=True)
+ 
+-        contexts = asyncio.run(
+-            _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
+-        )
++        if no_observe:
++            contexts = asyncio.run(
++                _gather_confirmation_context(batch, nodes, abs_repo, project_dir)
++            )
++        else:
++            contexts = asyncio.run(
++                _gather_verify_contexts(batch, nodes, abs_repo, project_dir, model, timeout)
++            )
+ 
+         beliefs_section = []
+         for belief in batch:
+             ctx_text = contexts.get(belief["id"], "(no code context found)")
+             beliefs_section.append(
+                 f"### `{belief['id']}`\n{belief['text']}\n\n"
+                 f"**Code context:**\n{ctx_text}"
+             )
+ 
+         prompt = VERIFY_PROMPT.format(beliefs="\n\n---\n\n".join(beliefs_section))
+diff --git a/ftl_code_expert/prompts/__init__.py b/ftl_code_expert/prompts/__init__.py
+index b0feca3..2d6fb0b 100644
+--- a/ftl_code_expert/prompts/__init__.py
++++ b/ftl_code_expert/prompts/__init__.py
+@@ -2,32 +2,33 @@
+ 
+ from .common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS
+ from .diff import build_diff_prompt, build_diff_summary_prompt
+ from .file import build_file_prompt
+ from .function import build_function_prompt
+ from .observe import build_observe_prompt
+ from .derive import DERIVE_BELIEFS_PROMPT
+ from .propose import PROPOSE_BELIEFS_CODE
+ from .research import RESEARCH_INFER_FILES_PROMPT
+ from .review import REVIEW_PROMPT
+-from .verify import VERIFY_PROMPT
++from .verify import VERIFY_OBSERVE_PROMPT, VERIFY_PROMPT
+ from .repo import build_repo_prompt
+ from .scan import build_scan_prompt
+ from .spec import GENERATE_SPEC_PROMPT
+ 
+ __all__ = [
+     "BELIEFS_INSTRUCTIONS",
+     "DERIVE_BELIEFS_PROMPT",
+     "GENERATE_SPEC_PROMPT",
+     "PROPOSE_BELIEFS_CODE",
+     "RESEARCH_INFER_FILES_PROMPT",
+     "REVIEW_PROMPT",
++    "VERIFY_OBSERVE_PROMPT",
+     "VERIFY_PROMPT",
+     "TOPICS_INSTRUCTIONS",
+     "build_diff_prompt",
+     "build_diff_summary_prompt",
+     "build_file_prompt",
+     "build_function_prompt",
+     "build_observe_prompt",
+     "build_repo_prompt",
+     "build_scan_prompt",
+ ]
+diff --git a/ftl_code_expert/prompts/verify.py b/ftl_code_expert/prompts/verify.py
+index ee72f3c..67ae6cc 100644
+--- a/ftl_code_expert/prompts/verify.py
++++ b/ftl_code_expert/prompts/verify.py
+@@ -1,11 +1,71 @@
+-"""Prompt template for verifying belief staleness against current source code."""
++"""Prompt templates for verifying belief staleness against current source code."""
++
++VERIFY_OBSERVE_PROMPT = """\
++You are preparing to verify whether a belief about a codebase still holds.
++
++## Belief to Verify
++
++**ID:** {belief_id}
++
++**Claim:** {belief_text}
++
++## Initial Code Context
++
++{seed_context}
++
++## Repository Structure
++
++```
++{tree}
++```
++
++## Your Task
++
++Determine what additional information you need to confirm or refute this belief.
++Do NOT verify the belief yet. Only request observations.
++
++## Available Observation Tools
++
++| Tool | Purpose | Params |
++|------|---------|--------|
++| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
++| `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
++| `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
++| `find_symbol` | Find where a class/function is defined | `symbol` |
++| `find_usages` | Find where a symbol is used | `symbol` |
++| `file_imports` | Extract imports from a file | `file_path` |
++
++## Output Format
++
++Output a JSON array of observation requests:
++
++```json
++[
++  {{"name": "descriptive_name", "tool": "tool_name", "params": {{"param": "value"}}}},
++  ...
++]
++```
++
++## Guidelines
++
++- Request 3-8 observations. Be targeted, not exhaustive.
++- Focus on what you need to verify the specific claim above.
++- If the initial code context already covers the claim, request observations that would \
++confirm related behavior (callers, tests, configuration).
++- Use `find_usages` to trace how functions/classes are actually used.
++- Use `find_symbol` to locate definitions referenced in the belief.
++- If the initial context is empty, start with `grep` or `find_symbol` to locate the relevant code.
++
++Now output your observation requests as JSON:
++"""
++
+ 
+ VERIFY_PROMPT = """\
+ You are verifying whether beliefs about a codebase still hold by examining the current source code.
+ 
+ For each belief below, I provide the belief text and relevant code context gathered from \
+ the current state of the repository.
+ 
+ Determine whether each belief is:
+ - **CONFIRMED** — the current code still supports this claim
+ - **STALE** — the code has changed and the belief no longer holds (explain what changed)
+
+```
+
+## Your Task
+
+Analyze the diff and identify what additional information you need to render confident verdicts.
+Do NOT render verdicts yet. Only request observations.
+
+## Available Observation Tools
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `exception_hierarchy` | Show exception MRO and subclasses | Retry logic, exception handling |
+| `raises_analysis` | What exceptions a function raises | New function calls, error paths |
+| `call_graph` | What a function calls | Impact analysis |
+| `find_usages` | Where a symbol is used (with prod/test split) | Quick integration lookup |
+| `find_callers` | Caller analysis with prod/test split and calling context | Method signature changes, return type changes, constructor modifications, integration verification |
+| `test_coverage` | Find tests for a file (uses coverage-map if available) | Test coverage claims |
+| `coverage_map_tests` | Find tests covering a file (from coverage-map.json) | Precise test coverage from actual execution |
+| `coverage_map_files` | Find files covered by tests matching a pattern | Impact analysis for test changes |
+| `function_body` | Full source of a function/method | Need complete function context beyond diff hunks |
+| `file_imports` | Extract imports from a file | Verify import changes, check dependencies |
+| `project_dependencies` | Get pyproject.toml/requirements.txt | Verify new imports have dependencies |
+| `related_test_files` | Find test files for a source file | Discover tests by naming, imports, and coverage map |
+| `class_hierarchy` | Show base classes and their `__init__` signatures | Class changes its parent, modifies `__init__`, or uses `super()` |
+| `symbol_migration` | Check if a rename is complete across the repo | Symbol renamed in diff — verify old name is fully removed |
+| `generator_info` | Report whether a function uses `yield` | Function might be a generator — affects return value semantics |
+
+## What to Look For
+
+1. **Exception handling**: Any `retry_if_exception_type`, `except`, or exception class references
+2. **New dependencies**: Calls to external libraries where you don't know the error behavior
+3. **Behavioral changes**: Modified logic where you need to verify callers/callees
+4. **Test claims**: References to tests you can't see in the diff
+5. **Inheritance changes**: Class definition changes, new base classes, `super()` calls
+6. **Renames**: Symbols that appear to have been renamed in the diff
+7. **Factory methods**: Calls to `@classmethod` / `@staticmethod` constructors (e.g. `Result.error(...)`) — request `function_body` to see their implementation
+
+## Output Format
+
+Output a JSON array of observation requests:
+
+```json
+[
+  {"name": "descriptive_name", "tool": "tool_name", "params": {"param": "value"}},
+  ...
+]
+```
+
+If you don't need any observations (simple changes, all context is in the diff), output:
+
+```json
+[]
+```
+
+## Examples
+
+For a diff containing `retry_if_exception_type((OSError, httpx.TransportError))`:
+```json
+[
+  {"name": "oserror_subclasses", "tool": "exception_hierarchy", "params": {"class_name": "builtins.OSError"}},
+  {"name": "transport_errors", "tool": "exception_hierarchy", "params": {"class_name": "httpx.TransportError"}}
+]
+```
+
+For a diff adding a new function that calls `oauth_client.get_access_token()`:
+```json
+[
+  {"name": "oauth_exceptions", "tool": "raises_analysis", "params": {"file_path": "src/auth/oauth.py", "function_name": "get_access_token"}}
+]
+```
+
+For a diff modifying a method but you need the full function to verify:
+```json
+[
+  {"name": "full_getattr", "tool": "function_body", "params": {"file_path": "src/proxy.py", "function_name": "__getattr__"}}
+]
+```
+
+For a diff changing a method signature or return type (verify all callers):
+```json
+[
+  {"name": "handle_request_callers", "tool": "find_callers", "params": {"symbol": "handle_request"}}
+]
+```
+
+For a diff adding new imports (e.g., `import httpx`):
+```json
+[
+  {"name": "file_imports", "tool": "file_imports", "params": {"file_path": "src/client.py"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}}
+]
+```
+
+For a diff calling a factory method like `ModuleResult.error_result(msg)`:
+```json
+[
+  {"name": "error_result_body", "tool": "function_body", "params": {"file_path": "src/models.py", "function_name": "error_result"}}
+]
+```
+
+For a diff where a class changes its parent class:
+```json
+[
+  {"name": "client_hierarchy", "tool": "class_hierarchy", "params": {"class_name": "MyClient", "file_path": "src/client.py"}}
+]
+```
+
+For a diff that renames a symbol (e.g., `OldClient` to `NewClient`):
+```json
+[
+  {"name": "client_rename", "tool": "symbol_migration", "params": {"old_name": "OldClient", "new_name": "NewClient"}}
+]
+```
+
+For a diff modifying a function that might be a generator:
+```json
+[
+  {"name": "process_gen", "tool": "generator_info", "params": {"file_path": "src/pipeline.py", "function_name": "process_items"}}
+]
+```
+
+Now analyze the diff above and output your observation requests as JSON:

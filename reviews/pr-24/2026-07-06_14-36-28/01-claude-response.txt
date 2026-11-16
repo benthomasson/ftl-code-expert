@@ -1,0 +1,13 @@
+Five findings reported, ranked by severity:
+
+1. **`_find_entry_points` Rust parsing** — the `elif` branch designed for Python `[project.scripts]` will incorrectly treat Cargo.toml keys like `required-features`, `bench`, `test` as entry points.
+
+2. **LLM-dispatched observations don't receive `lang`** — `find_symbol`, `find_usages`, `file_imports` all fall back to Python when called through `run_observation` dispatch. Non-Python repos won't benefit from language-aware observations during the LLM-driven observe loop.
+
+3. **Redundant `detect_language` calls** — async paths call `detect_language()` (which spawns `git ls-files`) instead of receiving the already-cached `lang` from their callers. Multiplied by concurrency.
+
+4. **Unused `field` import** in `language.py`.
+
+5. **`decorator_prefix` declared but never used** — decorators/attributes aren't captured during symbol extraction for any language.
+
+No test coverage exists for any modified module. The overall architecture is sound — the `LanguageProfile` dataclass and registry pattern is clean, and all synchronous callers properly thread `lang` through. The issues are at the edges: the TOML parser generalization, the async dispatch gap, and the performance of uncached detection.

@@ -1,0 +1,15 @@
+The review is complete. Six findings reported, ranked by severity:
+
+1. **`lang` not threaded through observation dispatch** — the most impactful gap. When an LLM requests `find_symbol`/`find_usages`/`file_imports` during verify or explore, the dispatch layer (`run_observation`) never injects `lang`, so non-Python repos silently get Python patterns.
+
+2. **`str.replace` instead of `removesuffix`** in `module_name_from_path` — will corrupt paths where a directory name contains the extension string.
+
+3. **Decorator capture dropped** — the new `_extract_symbol_indent` ignores the `decorator_prefix` field on `LanguageProfile`, losing `@decorator` context in extracted symbols.
+
+4. **Redundant `detect_language` calls** — `_gather_verify_contexts` doesn't pass `lang` through, so it re-detects language per belief.
+
+5. **Cargo.toml entry point parsing** — incomplete key filtering means non-entry-point keys get appended.
+
+6. **Zero test coverage** — 283 lines of new, non-trivial logic (brace-counting extraction, language detection, pattern compilation) with no tests anywhere.
+
+No blocking issues for **Python repos** since all paths default to `PYTHON`. The concerns are all about non-Python support being incomplete or fragile.

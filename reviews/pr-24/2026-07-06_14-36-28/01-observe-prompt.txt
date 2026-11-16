@@ -1,0 +1,1393 @@
+You are a senior code reviewer preparing to review code changes.
+
+## Code Changes
+
+```diff
+diff --git a/ftl_code_expert/cli.py b/ftl_code_expert/cli.py
+index e9dd5a3..cfeb1a9 100644
+--- a/ftl_code_expert/cli.py
++++ b/ftl_code_expert/cli.py
+@@ -1,5 +1,7 @@
+ """Command-line interface for code expert."""
+ 
++from __future__ import annotations
++
+ import asyncio
+ import json
+ import os
+@@ -12,6 +14,7 @@
+ 
+ import click
+ 
++from .language import detect_language, PYTHON
+ from .git_utils import (
+     commits_since_checkpoint,
+     extract_symbol,
+@@ -89,6 +92,13 @@ def _get_project_dir(ctx) -> str:
+     return os.path.join(_get_repo(ctx), PROJECT_DIR)
+ 
+ 
++def _get_lang(ctx):
++    """Lazily detect and cache the repo's primary language."""
++    if "lang" not in ctx.obj or ctx.obj["lang"] is None:
++        ctx.obj["lang"] = detect_language(_get_repo(ctx))
++    return ctx.obj["lang"]
++
++
+ # --- Output helpers ---
+ 
+ 
+@@ -203,28 +213,33 @@ def _find_project_config(repo_path: str) -> tuple[str | None, str | None]:
+     return None, None
+ 
+ 
+-def _find_entry_points(repo_path: str, config_content: str | None) -> list[str]:
++def _find_entry_points(repo_path: str, config_content: str | None, lang=None) -> list[str]:
+     """Identify likely entry points from config and convention."""
++    lang = lang or PYTHON
+     entry_points = []
+-    candidates = [
+-        "src/main.py", "main.py", "app.py", "src/app.py",
+-        "manage.py", "setup.py", "cli.py",
+-    ]
+-    for candidate in candidates:
++    for candidate in lang.entry_point_candidates:
+         if os.path.isfile(os.path.join(repo_path, candidate)):
+             entry_points.append(candidate)
+ 
+-    if config_content and "[project.scripts]" in config_content:
+-        in_scripts = False
++    marker = lang.config_entry_point_marker
++    if config_content and marker and marker in config_content:
++        in_section = False
+         for line in config_content.split("\n"):
+-            if "[project.scripts]" in line:
+-                in_scripts = True
++            if marker in line:
++                in_section = True
+                 continue
+-            if in_scripts:
++            if in_section:
+                 if line.startswith("["):
+-                    break
++                    in_section = False
++                    continue
+                 if "=" in line:
+-                    entry_points.append(line.strip())
++                    key, _, value = line.partition("=")
++                    key = key.strip()
++                    value = value.strip().strip('"').strip("'")
++                    if key == "path" and value:
++                        entry_points.append(value)
++                    elif key != "path" and key != "name":
++                        entry_points.append(line.strip())
+ 
+     return entry_points
+ 
+@@ -344,10 +359,11 @@ def scan(ctx):
+ 
+     click.echo(f"Scanning {repo_path}...", err=True)
+ 
++    lang = _get_lang(ctx)
+     tree = get_repo_structure(repo_path, max_depth=3)
+     _, config_content = _find_project_config(repo_path)
+     readme_content = get_file_content(os.path.join(repo_path, "README.md"))
+-    entry_points = _find_entry_points(repo_path, config_content)
++    entry_points = _find_entry_points(repo_path, config_content, lang=lang)
+ 
+     prompt = build_scan_prompt(
+         tree=tree,
+@@ -427,7 +443,8 @@ def explain_file(ctx, file_path):
+     click.echo(f"Explaining {file_path}...", err=True)
+ 
+     rel_path = os.path.relpath(abs_path, os.path.abspath(repo_path))
+-    import_info = get_imports(abs_path, os.path.abspath(repo_path))
++    lang = _get_lang(ctx)
++    import_info = get_imports(abs_path, os.path.abspath(repo_path), lang=lang)
+     repo_tree = get_repo_structure(os.path.abspath(repo_path), max_depth=2)
+ 
+     prompt = build_file_prompt(
+@@ -478,8 +495,9 @@ def explain_function(ctx, target):
+ 
+     abs_path = os.path.abspath(file_path)
+     abs_repo = os.path.abspath(repo_path)
++    lang = _get_lang(ctx)
+ 
+-    symbol_source = extract_symbol(abs_path, symbol_name)
++    symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)
+     if symbol_source is None:
+         click.echo(f"Error: Symbol '{symbol_name}' not found in {file_path}", err=True)
+         sys.exit(1)
+@@ -487,7 +505,7 @@ def explain_function(ctx, target):
+     click.echo(f"Explaining {symbol_name} from {file_path}...", err=True)
+ 
+     full_content = get_file_content(abs_path)
+-    related_tests = find_related_tests(abs_path, abs_repo, symbol_name)
++    related_tests = find_related_tests(abs_path, abs_repo, symbol_name, lang=lang)
+     rel_path = os.path.relpath(abs_path, abs_repo)
+ 
+     prompt = build_function_prompt(
+@@ -496,6 +514,7 @@ def explain_function(ctx, target):
+         symbol_source=symbol_source,
+         full_file_content=full_content,
+         related_tests=related_tests or None,
++        language=lang.fence_language,
+     )
+ 
+     click.echo(f"Running {model}...", err=True)
+@@ -541,7 +560,8 @@ def explain_repo(ctx, repo_path):
+             readme_content = get_file_content(os.path.join(abs_repo, alt))
+             if readme_content is not None:
+                 break
+-    entry_points = _find_entry_points(abs_repo, config_content)
++    lang = _get_lang(ctx)
++    entry_points = _find_entry_points(abs_repo, config_content, lang=lang)
+ 
+     prompt = build_repo_prompt(
+         tree=tree,
+@@ -891,14 +911,15 @@ def _explore_loop(ctx, project_dir, max_topics):
+     click.echo(f"\nExplored {explored} topic(s). {remaining} remaining in queue.", err=True)
+ 
+ 
+-def _prepare_file_topic(topic, repo_path):
++def _prepare_file_topic(topic, repo_path, lang=None):
+     """Prepare prompt for a file topic. Returns (prompt, entry_name, entry_title, source) or None."""
++    lang = lang or PYTHON
+     file_path = topic.target
+     abs_path = os.path.join(repo_path, file_path) if not os.path.isabs(file_path) else file_path
+ 
+     if os.path.isdir(abs_path):
+         topic.kind = "repo"
+-        return _prepare_repo_topic(topic, repo_path)
++        return _prepare_repo_topic(topic, repo_path, lang=lang)
+ 
+     if not os.path.isfile(abs_path):
+         click.echo(f"File not found: {file_path} (skipping)", err=True)
+@@ -910,7 +931,7 @@ def _prepare_file_topic(topic, repo_path):
+         return None
+ 
+     rel_path = os.path.relpath(abs_path, repo_path)
+-    import_info = get_imports(abs_path, repo_path)
++    import_info = get_imports(abs_path, repo_path, lang=lang)
+     repo_tree = get_repo_structure(repo_path, max_depth=2)
+ 
+     prompt = build_file_prompt(
+@@ -925,8 +946,9 @@ def _prepare_file_topic(topic, repo_path):
+     return prompt, entry_name, f"File: {rel_path}", f"file:{rel_path}"
+ 
+ 
+-def _prepare_function_topic(topic, repo_path):
++def _prepare_function_topic(topic, repo_path, lang=None):
+     """Prepare prompt for a function topic. Returns (prompt, entry_name, entry_title, source) or None."""
++    lang = lang or PYTHON
+     if ":" not in topic.target:
+         click.echo(f"Function topic must be file:symbol, got: {topic.target}", err=True)
+         return None
+@@ -938,13 +960,13 @@ def _prepare_function_topic(topic, repo_path):
+         click.echo(f"File not found: {file_path} (skipping)", err=True)
+         return None
+ 
+-    symbol_source = extract_symbol(abs_path, symbol_name)
++    symbol_source = extract_symbol(abs_path, symbol_name, lang=lang)
+     if symbol_source is None:
+         click.echo(f"Symbol '{symbol_name}' not found in {file_path} (skipping)", err=True)
+         return None
+ 
+     full_content = get_file_content(abs_path)
+-    related_tests = find_related_tests(abs_path, repo_path, symbol_name)
++    related_tests = find_related_tests(abs_path, repo_path, symbol_name, lang=lang)
+     rel_path = os.path.relpath(abs_path, repo_path)
+ 
+     prompt = build_function_prompt(
+@@ -953,14 +975,16 @@ def _prepare_function_topic(topic, repo_path):
+         symbol_source=symbol_source,
+         full_file_content=full_content,
+         related_tests=related_tests or None,
++        language=lang.fence_language,
+     )
+ 
+     entry_name = _sanitize_path_for_filename(rel_path) + f"-{symbol_name}"
+     return prompt, entry_name, f"Function: {symbol_name} in {rel_path}", f"function:{rel_path}:{symbol_name}"
+ 
+ 
+-def _prepare_repo_topic(topic, repo_path):
++def _prepare_repo_topic(topic, repo_path, lang=None):
+     """Prepare prompt for a repo topic. Returns (prompt, entry_name, entry_title, source) or None."""
++    lang = lang or PYTHON
+     target_path = os.path.join(repo_path, topic.target) if topic.target != "." else repo_path
+     if not os.path.isdir(target_path):
+         target_path = repo_path
+@@ -968,7 +992,7 @@ def _prepare_repo_topic(topic, repo_path):
+     tree = get_repo_structure(target_path)
+     _, config_content = _find_project_config(target_path)
+     readme_content = get_file_content(os.path.join(target_path, "README.md"))
+-    entry_points = _find_entry_points(target_path, config_content)
++    entry_points = _find_entry_points(target_path, config_content, lang=lang)
+ 
+     prompt = build_repo_prompt(
+         tree=tree,
+@@ -980,7 +1004,7 @@ def _prepare_repo_topic(topic, repo_path):
+     return prompt, "repo-overview", "Repo Overview", "repo-overview"
+ 
+ 
+-def _prepare_diff_topic(topic, repo_path):
++def _prepare_diff_topic(topic, repo_path, lang=None):
+     """Prepare prompt for a diff topic. Returns (prompt, entry_name, entry_title, source) or None."""
+     try:
+         diff_content = get_diff(topic.target, cwd=repo_path)
+@@ -1029,7 +1053,8 @@ def _finalize_topic(ctx, entry_name, entry_title, source, result):
+ 
+ def _run_file_topic(ctx, topic, model, repo_path):
+     """Handle a file exploration topic."""
+-    prepared = _prepare_file_topic(topic, repo_path)
++    lang = _get_lang(ctx)
++    prepared = _prepare_file_topic(topic, repo_path, lang=lang)
+     if prepared is None:
+         return
+     prompt, entry_name, entry_title, source = prepared
+@@ -1044,7 +1069,8 @@ def _run_file_topic(ctx, topic, model, repo_path):
+ 
+ def _run_function_topic(ctx, topic, model, repo_path):
+     """Handle a function exploration topic."""
+-    prepared = _prepare_function_topic(topic, repo_path)
++    lang = _get_lang(ctx)
++    prepared = _prepare_function_topic(topic, repo_path, lang=lang)
+     if prepared is None:
+         return
+     prompt, entry_name, entry_title, source = prepared
+@@ -1059,7 +1085,8 @@ def _run_function_topic(ctx, topic, model, repo_path):
+ 
+ def _run_repo_topic(ctx, topic, model, repo_path):
+     """Handle a repo exploration topic."""
+-    prepared = _prepare_repo_topic(topic, repo_path)
++    lang = _get_lang(ctx)
++    prepared = _prepare_repo_topic(topic, repo_path, lang=lang)
+     if prepared is None:
+         return
+     prompt, entry_name, entry_title, source = prepared
+@@ -1091,8 +1118,11 @@ async def _run_general_topic_async(topic, model, repo_path, timeout):
+     """Run a general topic's full observe-then-explain pipeline asynchronously."""
+     from .prompts.common import BELIEFS_INSTRUCTIONS, TOPICS_INSTRUCTIONS
+ 
++    lang = detect_language(repo_path)
+     tree = get_repo_structure(repo_path, max_depth=2)
+-    observe_prompt = build_observe_prompt(question=topic.title, tree=tree)
++    observe_prompt = build_observe_prompt(
++        question=topic.title, tree=tree, default_glob=lang.source_globs[0],
++    )
+ 
+     observe_response = await invoke(observe_prompt, model)
+     requested_obs = parse_observation_requests(observe_response)
+@@ -1151,8 +1181,9 @@ def _run_general_topic(ctx, topic, model, repo_path):
+     _finalize_topic(ctx, entry_name, entry_title, source, result)
+ 
+ 
+-async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent):
++async def _explore_topics_concurrent(topics, model, repo_path, timeout, max_concurrent, lang=None):
+     """Explore multiple topics concurrently. Returns list of (topic, result, entry_name, entry_title, source) or Exception."""
++    lang = lang or detect_language(repo_path)
+     sem = asyncio.Semaphore(max_concurrent)
+ 
+     async def _do_topic(topic):
+@@ -1168,7 +1199,7 @@ async def _do_topic(topic):
+             if not prepare_fn:
+                 raise ValueError(f"Unknown topic kind: {topic.kind}")
+ 
+-            prepared = prepare_fn(topic, repo_path)
++            prepared = prepare_fn(topic, repo_path, lang=lang)
+             if prepared is None:
+                 return None
+ 
+@@ -1182,27 +1213,27 @@ async def _do_topic(topic):
+     )
+ 
+ 
+-def _repo_path_to_entry_pattern(repo_path: str) -> str:
++def _repo_path_to_entry_pattern(repo_path: str, lang=None) -> str:
+     """Convert a repo file path to the entry-name pattern used in belief sources.
+ 
+     Example: src/redhat_agents/capabilities/dataverse/mart_proxy.py
+           -> src-redhat_agents-capabilities-dataverse-mart_proxy
+     """
+-    # Strip .py extension
+-    if repo_path.endswith(".py"):
+-        repo_path = repo_path[:-3]
+-    # Replace path separators with dashes
++    lang = lang or PYTHON
++    ext = lang.primary_extension
++    if repo_path.endswith(ext):
++        repo_path = repo_path[:-len(ext)]
+     return repo_path.replace("/", "-").replace("\\", "-")
+ 
+ 
+-def _retract_beliefs_for_deleted_files(deleted_files: set[str]) -> None:
++def _retract_beliefs_for_deleted_files(deleted_files: set[str], lang=None) -> None:
+     """Find beliefs sourced from deleted files and retract them via reasons."""
+     beliefs_path = Path("beliefs.md")
+     if not beliefs_path.exists():
+         return
+ 
+     # Build entry-name patterns for deleted files
+-    patterns = {_repo_path_to_entry_pattern(f) for f in deleted_files}
++    patterns = {_repo_path_to_entry_pattern(f, lang=lang) for f in deleted_files}
+ 
+     # Parse beliefs and find those sourced from deleted files
+     beliefs = _parse_beliefs_md(beliefs_path)
+@@ -1342,7 +1373,7 @@ def walk_commits(ctx, since, since_commit, since_last, dry_run):
+ 
+     # Retract beliefs sourced from deleted files
+     if deleted_files:
+-        _retract_beliefs_for_deleted_files(deleted_files)
++        _retract_beliefs_for_deleted_files(deleted_files, lang=_get_lang(ctx))
+ 
+     if not check_model_available(model):
+         click.echo(f"Error: Model '{model}' CLI not available", err=True)
+@@ -2394,20 +2425,22 @@ def _gather_beliefs_for_spec(keywords: list[str]) -> list[dict]:
+     return matched
+ 
+ 
+-def _gather_source_files(repo_path: str, beliefs: list[dict]) -> dict[str, str]:
++def _gather_source_files(repo_path: str, beliefs: list[dict], lang=None) -> dict[str, str]:
+     """Read source files referenced by beliefs."""
+-    # Collect unique file paths from belief sources and IDs
++    lang = lang or PYTHON
+     file_paths = set()
+     for belief in beliefs:
+-        # Extract paths from source entries
+         source = belief.get("source", "")
+         # Source format: entries/2026/03/11/src-redhat_agents-workflow-synthesizer.md
+-        # Extract the implied source file: src/redhat_agents/workflow/synthesizer.py
+         m = re.search(r'src[-/](.+?)\.md', source)
+         if m:
+-            # Convert dashes back to path separators
+-            path = "src/" + m.group(1).replace("-", "/") + ".py"
+-            file_paths.add(path)
++            reconstructed = "src/" + m.group(1).replace("-", "/")
++            # Check if the reconstructed path already has a valid extension
++            _, ext = os.path.splitext(reconstructed)
++            if ext in lang.source_extensions:
++                file_paths.add(reconstructed)
++            else:
++                file_paths.add(reconstructed + lang.primary_extension)
+ 
+     # Also look for common patterns in belief IDs
+     source_files = {}
+@@ -2437,13 +2470,14 @@ def _format_beliefs_for_prompt(beliefs: list[dict]) -> str:
+     return "\n".join(lines)
+ 
+ 
+-def _format_source_code(source_files: dict[str, str]) -> str:
++def _format_source_code(source_files: dict[str, str], lang=None) -> str:
+     """Format source files into prompt-friendly text."""
++    lang = lang or PYTHON
+     if not source_files:
+         return "(No source files found)"
+     parts = []
+     for path, content in source_files.items():
+-        parts.append(f"### {path}\n\n```python\n{content}\n```")
++        parts.append(f"### {path}\n\n```{lang.fence_language}\n{content}\n```")
+     return "\n\n".join(parts)
+ 
+ 
+@@ -2486,15 +2520,16 @@ def generate_spec(ctx, component, keywords, output, source_files, model, dry_run
+     click.echo(f"Found {len(beliefs)} matching beliefs", err=True)
+ 
+     # Gather source files
+-    src_files = _gather_source_files(repo_path, beliefs)
++    lang = detect_language(repo_path)
++    src_files = _gather_source_files(repo_path, beliefs, lang=lang)
+ 
+-    # Add explicit source files (expand directories to .py files)
++    # Add explicit source files (expand directories to source files)
+     for sf in source_files:
+         abs_path = os.path.join(repo_path, sf) if not os.path.isabs(sf) else sf
+         if os.path.isdir(abs_path):
+             for root, _, files in os.walk(abs_path):
+                 for fname in sorted(files):
+-                    if not fname.endswith(".py"):
++                    if not any(fname.endswith(ext) for ext in lang.source_extensions):
+                         continue
+                     fpath = os.path.join(root, fname)
+                     content = get_file_content(fpath)
+@@ -2530,7 +2565,7 @@ def generate_spec(ctx, component, keywords, output, source_files, model, dry_run
+ 
+     # Build prompt
+     beliefs_text = _format_beliefs_for_prompt(beliefs)
+-    source_code = _format_source_code(src_files)
++    source_code = _format_source_code(src_files, lang=lang)
+     file_list = ", ".join(sorted(src_files.keys())) if src_files else "(none)"
+ 
+     config = _load_config()
+@@ -3080,6 +3115,7 @@ async def _auto_gather_verify_observations(
+     node: dict,
+     repo_path: str,
+     project_dir: str | None,
++    lang=None,
+ ) -> tuple[str | None, dict]:
+     """Auto-gather observations for a belief before LLM involvement.
+ 
+@@ -3088,6 +3124,8 @@ async def _auto_gather_verify_observations(
+     """
+     from .observations import find_usages, grep, read_file
+ 
++    lang = lang or detect_language(repo_path)
++
+     bid = belief["id"]
+     source = node.get("source", "")
+     obs: dict = {}
+@@ -3110,11 +3148,11 @@ async def _auto_gather_verify_observations(
+             symbols.append(term)
+ 
+     for sym in symbols[:2]:
+-        auto_tasks.append(find_usages(sym, repo_path))
++        auto_tasks.append(find_usages(sym, repo_path, lang=lang))
+         auto_names.append(f"find_usages:{sym}")
+ 
+     if not symbols and terms:
+-        auto_tasks.append(grep(terms[0], repo_path, glob="*.py", max_results=10))
++        auto_tasks.append(grep(terms[0], repo_path, glob=lang.source_globs, max_results=10))
+         auto_names.append(f"grep:{terms[0]}")
+ 
+     results = await asyncio.gather(*auto_tasks, return_exceptions=True)
+@@ -3133,6 +3171,7 @@ async def _verify_belief_with_observations(
+     project_dir: str | None,
+     model: str,
+     timeout: int,
++    lang=None,
+ ) -> tuple[str, str]:
+     """Gather code context for a belief using the observe pattern.
+ 
+@@ -3141,10 +3180,11 @@ async def _verify_belief_with_observations(
+     3. Execute LLM-requested observations in parallel
+     4. Return combined context
+     """
++    lang = lang or detect_language(repo_path)
+     bid = belief["id"]
+ 
+     src_file, auto_obs = await _auto_gather_verify_observations(
+-        belief, node, repo_path, project_dir,
++        belief, node, repo_path, project_dir, lang=lang,
+     )
+ 
+     tree = get_repo_structure(repo_path, max_depth=3)
+@@ -3191,6 +3231,7 @@ async def _verify_belief_with_observations(
+         belief_text=belief["text"],
+         seed_context=seed_context or "(no initial source file)",
+         tree=tree,
++        default_glob=lang.source_globs[0],
+     )
+     observe_response = await invoke(observe_prompt, model, timeout=timeout)
+     requested_obs = parse_observation_requests(observe_response)
+diff --git a/ftl_code_expert/git_utils.py b/ftl_code_expert/git_utils.py
+index a58cb61..ac71a42 100644
+--- a/ftl_code_expert/git_utils.py
++++ b/ftl_code_expert/git_utils.py
+@@ -1,10 +1,16 @@
+ """Git utilities for code explanation."""
+ 
++from __future__ import annotations
++
+ import json
+ import os
+ import subprocess
+ from datetime import datetime
+ from pathlib import Path
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .language import LanguageProfile
+ 
+ 
+ def get_diff(
+@@ -309,112 +315,66 @@ def get_commit_log(
+     return result.stdout
+ 
+ 
+-def get_imports(file_path: str, repo_path: str) -> dict:
++def get_imports(file_path: str, repo_path: str, lang: LanguageProfile | None = None) -> dict:
+     """
+-    Analyze imports for a Python file.
++    Analyze imports for a source file.
+ 
+     Returns dict with:
+         - imports: list of modules this file imports
+         - imported_by: list of files that import this file
+     """
++    from .language import PYTHON
++
++    lang = lang or PYTHON
++
+     content = get_file_content(file_path)
+     if content is None:
+         return {"imports": [], "imported_by": []}
+ 
+-    # Parse imports from this file
+     imports = []
+     for line in content.split("\n"):
+-        line = line.strip()
+-        if line.startswith("import ") or line.startswith("from "):
+-            imports.append(line)
++        if lang.matches_import(line):
++            imports.append(line.strip())
+ 
+-    # Find files that import this module
+     rel_path = os.path.relpath(file_path, repo_path)
+-    module_name = rel_path.replace("/", ".").replace(".py", "").replace(".__init__", "")
+-    # Also try the simple filename
++    module_name = lang.module_name_from_path(rel_path)
+     simple_name = Path(file_path).stem
+ 
+     imported_by = []
+     root = Path(repo_path)
+-    for py_file in root.rglob("*.py"):
+-        if str(py_file) == file_path:
+-            continue
+-        try:
+-            py_content = py_file.read_text(encoding="utf-8")
+-        except (UnicodeDecodeError, PermissionError):
+-            continue
+-        for line in py_content.split("\n"):
+-            line = line.strip()
+-            if (line.startswith("import ") or line.startswith("from ")) and (
+-                module_name in line or simple_name in line
+-            ):
+-                imported_by.append(str(py_file.relative_to(root)))
+-                break
++    for glob_pattern in lang.source_globs:
++        for src_file in root.rglob(glob_pattern):
++            if str(src_file) == file_path:
++                continue
++            try:
++                src_content = src_file.read_text(encoding="utf-8")
++            except (UnicodeDecodeError, PermissionError):
++                continue
++            for src_line in src_content.split("\n"):
++                if lang.matches_import(src_line) and (
++                    module_name in src_line or simple_name in src_line
++                ):
++                    imported_by.append(str(src_file.relative_to(root)))
++                    break
+ 
+     return {"imports": imports, "imported_by": imported_by}
+ 
+ 
+-def extract_symbol(file_path: str, symbol: str) -> str | None:
++def extract_symbol(file_path: str, symbol: str, lang: LanguageProfile | None = None) -> str | None:
+     """
+     Extract a function or class definition from a file.
+ 
+     Args:
+         file_path: Path to the file
+         symbol: Name of the function or class
++        lang: Language profile (defaults to Python)
+ 
+     Returns:
+         Source code of the symbol, or None if not found
+     """
+-    content = get_file_content(file_path)
+-    if content is None:
+-        return None
+-
+-    lines = content.split("\n")
+-    result_lines = []
+-    capturing = False
+-    base_indent = None
+-
+-    for line in lines:
+-        stripped = line.lstrip()
+-
+-        # Check for function/class definition
+-        if not capturing:
+-            if (
+-                stripped.startswith(f"def {symbol}(")
+-                or stripped.startswith(f"def {symbol} (")
+-                or stripped.startswith(f"class {symbol}(")
+-                or stripped.startswith(f"class {symbol}:")
+-                or stripped.startswith(f"class {symbol} (")
+-                or stripped.startswith(f"async def {symbol}(")
+-                or stripped.startswith(f"async def {symbol} (")
+-            ):
+-                capturing = True
+-                base_indent = len(line) - len(stripped)
+-                # Include decorator lines above
+-                while result_lines and result_lines[-1].strip().startswith("@"):
+-                    pass  # already captured
+-                result_lines.append(line)
+-                continue
+-
+-        if capturing:
+-            # Empty lines are part of the definition
+-            if not stripped:
+-                result_lines.append(line)
+-                continue
+-
+-            current_indent = len(line) - len(stripped)
+-
+-            # If we hit something at same or lesser indent, we're done
+-            # (unless it's a decorator for a nested definition)
+-            if current_indent <= base_indent and stripped and not stripped.startswith("#"):
+-                break
+-
+-            result_lines.append(line)
+-
+-    if not result_lines:
+-        return None
++    from .language import extract_symbol_with_profile
+ 
+-    return "\n".join(result_lines)
++    return extract_symbol_with_profile(file_path, symbol, lang)
+ 
+ 
+ def list_commits_with_files(
+@@ -476,7 +436,9 @@ def list_commits_with_files(
+     return commits
+ 
+ 
+-def find_related_tests(file_path: str, repo_path: str, symbol: str | None = None) -> list[str]:
++def find_related_tests(
++    file_path: str, repo_path: str, symbol: str | None = None, lang: LanguageProfile | None = None,
++) -> list[str]:
+     """
+     Find test files related to a source file or symbol.
+ 
+@@ -484,35 +446,38 @@ def find_related_tests(file_path: str, repo_path: str, symbol: str | None = None
+         file_path: Source file path
+         repo_path: Repository root
+         symbol: Optional symbol name to search for
++        lang: Language profile (defaults to Python)
+ 
+     Returns:
+         List of related test file paths (relative to repo)
+     """
++    from .language import PYTHON
++
++    lang = lang or PYTHON
++
+     root = Path(repo_path)
+     source_name = Path(file_path).stem
+-    related = []
+-
+-    for test_file in root.rglob("test_*.py"):
+-        rel = str(test_file.relative_to(root))
+-        # Check if test file name matches source file
+-        if source_name in test_file.name:
+-            related.append(rel)
+-            continue
++    related: list[str] = []
++    seen: set[str] = set()
+ 
+-        # If symbol provided, check if test file references it
+-        if symbol:
+-            try:
+-                content = test_file.read_text(encoding="utf-8")
+-                if symbol in content:
+-                    related.append(rel)
+-            except (UnicodeDecodeError, PermissionError):
++    for glob_pattern in lang.test_globs:
++        for test_file in root.rglob(glob_pattern):
++            rel = str(test_file.relative_to(root))
++            if rel in seen:
+                 continue
+ 
+-    # Also check tests/ directory for *_test.py pattern
+-    for test_file in root.rglob("*_test.py"):
+-        rel = str(test_file.relative_to(root))
+-        if rel not in related:
+             if source_name in test_file.name:
+                 related.append(rel)
++                seen.add(rel)
++                continue
++
++            if symbol:
++                try:
++                    content = test_file.read_text(encoding="utf-8")
++                    if symbol in content:
++                        related.append(rel)
++                        seen.add(rel)
++                except (UnicodeDecodeError, PermissionError):
++                    continue
+ 
+     return related
+diff --git a/ftl_code_expert/language.py b/ftl_code_expert/language.py
+new file mode 100644
+index 0000000..ca72690
+--- /dev/null
++++ b/ftl_code_expert/language.py
+@@ -0,0 +1,289 @@
++"""Language profiles for multi-language code analysis."""
++
++from __future__ import annotations
++
++import os
++import re
++from dataclasses import dataclass, field
++
++
++@dataclass(frozen=True)
++class LanguageProfile:
++    name: str
++    source_globs: list[str]
++    source_extensions: list[str]
++    fence_language: str
++    definition_patterns: list[str]
++    import_line_prefixes: list[str]
++    scope_style: str  # "indent" or "brace"
++    test_globs: list[str]
++    entry_point_candidates: list[str]
++    config_files: list[str]
++    primary_extension: str
++    config_entry_point_marker: str | None = None
++    decorator_prefix: str | None = None
++
++    def matches_import(self, line: str) -> bool:
++        stripped = line.strip()
++        return any(stripped.startswith(p) for p in self.import_line_prefixes)
++
++    def module_name_from_path(self, rel_path: str) -> str:
++        if rel_path.endswith(self.primary_extension):
++            name = rel_path[:-len(self.primary_extension)]
++        else:
++            name = os.path.splitext(rel_path)[0]
++        if self.name == "python":
++            return name.replace("/", ".").replace(".__init__", "")
++        return os.path.basename(name)
++
++
++PYTHON = LanguageProfile(
++    name="python",
++    source_globs=["*.py"],
++    source_extensions=[".py"],
++    fence_language="python",
++    definition_patterns=[
++        r"^(class|def|async def) {symbol}[(:  ]",
++        r"^{symbol}\s*=",
++    ],
++    import_line_prefixes=["import ", "from "],
++    scope_style="indent",
++    test_globs=["test_*.py", "*_test.py"],
++    entry_point_candidates=[
++        "src/main.py", "main.py", "app.py", "src/app.py",
++        "manage.py", "setup.py", "cli.py",
++    ],
++    config_files=["pyproject.toml", "setup.py", "setup.cfg"],
++    primary_extension=".py",
++    config_entry_point_marker="[project.scripts]",
++    decorator_prefix="@",
++)
++
++CPP = LanguageProfile(
++    name="cpp",
++    source_globs=["*.cpp", "*.cc", "*.cxx", "*.c", "*.h", "*.hpp", "*.hh", "*.hxx"],
++    source_extensions=[".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh", ".hxx"],
++    fence_language="cpp",
++    definition_patterns=[
++        r"^(class|struct|enum)\s+{symbol}\b",
++        r"^namespace\s+{symbol}\b",
++        r"^#define\s+{symbol}\b",
++        r"^(\w[\w:*& ]*\s+)?{symbol}\s*\(",
++    ],
++    import_line_prefixes=["#include"],
++    scope_style="brace",
++    test_globs=["test_*.cpp", "*_test.cpp", "test_*.cc", "*_test.cc"],
++    entry_point_candidates=[
++        "src/main.cpp", "main.cpp", "src/main.cc", "main.cc",
++        "src/main.c", "main.c",
++    ],
++    config_files=["CMakeLists.txt", "meson.build"],
++    primary_extension=".cpp",
++    config_entry_point_marker=None,
++    decorator_prefix=None,
++)
++
++RUST = LanguageProfile(
++    name="rust",
++    source_globs=["*.rs"],
++    source_extensions=[".rs"],
++    fence_language="rust",
++    definition_patterns=[
++        r"^pub(\s*\(crate\))?\s*(async\s+)?fn\s+{symbol}\b",
++        r"^(async\s+)?fn\s+{symbol}\b",
++        r"^pub(\s*\(crate\))?\s*(struct|enum|trait|type|const|static|mod)\s+{symbol}\b",
++        r"^(struct|enum|trait|type|const|static|mod)\s+{symbol}\b",
++        r"^impl(<.*>)?\s+{symbol}\b",
++        r"^macro_rules!\s+{symbol}\b",
++    ],
++    import_line_prefixes=["use ", "mod "],
++    scope_style="brace",
++    test_globs=["*_test.rs", "test_*.rs"],
++    entry_point_candidates=[
++        "src/main.rs", "src/lib.rs",
++    ],
++    config_files=["Cargo.toml"],
++    primary_extension=".rs",
++    config_entry_point_marker="[[bin]]",
++    decorator_prefix="#[",
++)
++
++LANGUAGE_REGISTRY: dict[str, LanguageProfile] = {
++    "python": PYTHON,
++    "cpp": CPP,
++    "rust": RUST,
++}
++
++_CONFIG_TO_LANGUAGE: dict[str, str] = {
++    "pyproject.toml": "python",
++    "setup.py": "python",
++    "setup.cfg": "python",
++    "CMakeLists.txt": "cpp",
++    "meson.build": "cpp",
++    "package.json": "javascript",
++    "Cargo.toml": "rust",
++    "go.mod": "go",
++    "pom.xml": "java",
++    "build.gradle": "java",
++}
++
++
++def detect_language(repo_path: str) -> LanguageProfile:
++    """Auto-detect the repo's primary language. Falls back to Python."""
++    for config_file, lang_name in _CONFIG_TO_LANGUAGE.items():
++        if os.path.isfile(os.path.join(repo_path, config_file)):
++            if lang_name in LANGUAGE_REGISTRY:
++                return LANGUAGE_REGISTRY[lang_name]
++
++    from .git_utils import list_source_files
++
++    try:
++        files = list_source_files(repo_path)
++    except Exception:
++        return PYTHON
++
++    ext_counts: dict[str, int] = {}
++    for f in files:
++        ext = os.path.splitext(f)[1].lower()
++        if ext:
++            ext_counts[ext] = ext_counts.get(ext, 0) + 1
++
++    best_lang = None
++    best_count = 0
++    for lang in LANGUAGE_REGISTRY.values():
++        count = sum(ext_counts.get(ext, 0) for ext in lang.source_extensions)
++        if count > best_count:
++            best_count = count
++            best_lang = lang
++
++    return best_lang or PYTHON
++
++
++def get_grep_include_args(lang: LanguageProfile) -> list[str]:
++    return [f"--include={g}" for g in lang.source_globs]
++
++
++def _extract_symbol_indent(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:
++    """Indent-based scope extraction (Python)."""
++    from .git_utils import get_file_content
++
++    content = get_file_content(file_path)
++    if content is None:
++        return None
++
++    lines = content.split("\n")
++    result_lines: list[str] = []
++    capturing = False
++    base_indent = None
++
++    compiled = [re.compile(p.format(symbol=re.escape(symbol))) for p in lang.definition_patterns]
++
++    for line in lines:
++        stripped = line.lstrip()
++
++        if not capturing:
++            if any(pat.match(stripped) for pat in compiled):
++                capturing = True
++                base_indent = len(line) - len(stripped)
++                result_lines.append(line)
++                continue
++
++        if capturing:
++            if not stripped:
++                result_lines.append(line)
++                continue
++
++            current_indent = len(line) - len(stripped)
++            if current_indent <= base_indent and stripped and not stripped.startswith("#"):
++                break
++
++            result_lines.append(line)
++
++    if not result_lines:
++        return None
++    return "\n".join(result_lines)
++
++
++def _extract_symbol_brace(file_path: str, symbol: str, lang: LanguageProfile) -> str | None:
++    """Brace-counting scope extraction (C/C++/Java/JS/etc.)."""
++    from .git_utils import get_file_content
++
++    content = get_file_content(file_path)
++    if content is None:
++        return None
++
++    lines = content.split("\n")
++    compiled = [re.compile(p.format(symbol=re.escape(symbol))) for p in lang.definition_patterns]
++
++    start_idx = None
++    for i, line in enumerate(lines):
++        stripped = line.lstrip()
++        if any(pat.match(stripped) for pat in compiled):
++            start_idx = i
++            break
++
++    if start_idx is None:
++        return None
++
++    result_lines: list[str] = []
++    brace_depth = 0
++    found_open = False
++    in_block_comment = False
++
++    for i in range(start_idx, len(lines)):
++        line = lines[i]
++        result_lines.append(line)
++
++        j = 0
++        while j < len(line):
++            if in_block_comment:
++                if line[j:j + 2] == "*/":
++                    in_block_comment = False
++                    j += 2
++                    continue
++                j += 1
++                continue
++
++            if line[j:j + 2] == "//":
++                break
++            if line[j:j + 2] == "/*":
++                in_block_comment = True
++                j += 2
++                continue
++
++            if line[j] == '"' or line[j] == "'":
++                quote = line[j]
++                j += 1
++                while j < len(line) and line[j] != quote:
++                    if line[j] == "\\":
++                        j += 1
++                    j += 1
++                j += 1
++                continue
++
++            if line[j] == ";" and not found_open:
++                return "\n".join(result_lines)
++
++            if line[j] == "{":
++                brace_depth += 1
++                found_open = True
++            elif line[j] == "}":
++                brace_depth -= 1
++
++            j += 1
++
++        if found_open and brace_depth <= 0:
++            break
++
++    if not result_lines:
++        return None
++    return "\n".join(result_lines)
++
++
++def extract_symbol_with_profile(
++    file_path: str, symbol: str, lang: LanguageProfile | None = None,
++) -> str | None:
++    lang = lang or PYTHON
++    if lang.scope_style == "indent":
++        return _extract_symbol_indent(file_path, symbol, lang)
++    return _extract_symbol_brace(file_path, symbol, lang)
+diff --git a/ftl_code_expert/observations.py b/ftl_code_expert/observations.py
+index 03ec53e..49b625c 100644
+--- a/ftl_code_expert/observations.py
++++ b/ftl_code_expert/observations.py
+@@ -13,25 +13,32 @@
+ import json
+ import re
+ from pathlib import Path
+-from typing import Any
++from typing import TYPE_CHECKING, Any
+ 
++if TYPE_CHECKING:
++    from .language import LanguageProfile
+ 
+-async def grep(pattern: str, repo_path: str, glob: str = "*.py", max_results: int = 30) -> dict[str, Any]:
++
++async def grep(
++    pattern: str, repo_path: str, glob: str | list[str] = "*.py", max_results: int = 30,
++) -> dict[str, Any]:
+     """
+     Search for a pattern in the codebase.
+ 
+     Args:
+         pattern: Regex pattern to search for
+         repo_path: Repository path
+-        glob: File glob pattern (default: *.py)
++        glob: File glob pattern(s) (default: *.py)
+         max_results: Maximum number of results
+ 
+     Returns:
+         Dict with matching files and lines
+     """
+     try:
++        globs = [glob] if isinstance(glob, str) else glob
++        include_args = [f"--include={g}" for g in globs]
+         proc = await asyncio.create_subprocess_exec(
+-            "grep", "-Ern", f"--include={glob}", pattern, repo_path,
++            "grep", "-Ern", *include_args, pattern, repo_path,
+             stdout=asyncio.subprocess.PIPE,
+             stderr=asyncio.subprocess.PIPE,
+         )
+@@ -148,28 +155,32 @@ def _walk(p: Path, depth: int, prefix: str):
+         return {"error": str(e), "dir": dir_path}
+ 
+ 
+-async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:
++async def find_symbol(
++    symbol: str, repo_path: str, lang: LanguageProfile | None = None,
++) -> dict[str, Any]:
+     """
+     Find where a symbol (class, function, variable) is defined.
+ 
+     Args:
+         symbol: Symbol name to find
+         repo_path: Repository path
++        lang: Language profile (defaults to Python)
+ 
+     Returns:
+         Dict with definition locations
+     """
++    from .language import PYTHON, get_grep_include_args
++
++    lang = lang or PYTHON
++
+     try:
+-        # Search for definitions
+-        patterns = [
+-            f"^(class|def|async def) {symbol}[(:  ]",
+-            f"^{symbol}\\s*=",
+-        ]
++        patterns = [p.format(symbol=re.escape(symbol)) for p in lang.definition_patterns]
++        include_args = get_grep_include_args(lang)
+ 
+         definitions = []
+         for pattern in patterns:
+             proc = await asyncio.create_subprocess_exec(
+-                "grep", "-Ern", "--include=*.py", pattern, repo_path,
++                "grep", "-Ern", *include_args, pattern, repo_path,
+                 stdout=asyncio.subprocess.PIPE,
+                 stderr=asyncio.subprocess.PIPE,
+             )
+@@ -198,20 +209,28 @@ async def find_symbol(symbol: str, repo_path: str) -> dict[str, Any]:
+         return {"error": str(e), "symbol": symbol}
+ 
+ 
+-async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:
++async def find_usages(
++    symbol: str, repo_path: str, lang: LanguageProfile | None = None,
++) -> dict[str, Any]:
+     """
+     Find where a symbol is used (imported, called, referenced).
+ 
+     Args:
+         symbol: Symbol to search for
+         repo_path: Repository path
++        lang: Language profile (defaults to Python)
+ 
+     Returns:
+         Dict with usage locations
+     """
++    from .language import PYTHON, get_grep_include_args
++
++    lang = lang or PYTHON
++    include_args = get_grep_include_args(lang)
++
+     try:
+         proc = await asyncio.create_subprocess_exec(
+-            "grep", "-Frn", "--include=*.py", symbol, repo_path,
++            "grep", "-Frn", *include_args, symbol, repo_path,
+             stdout=asyncio.subprocess.PIPE,
+             stderr=asyncio.subprocess.PIPE,
+         )
+@@ -241,41 +260,59 @@ async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:
+         return {"error": str(e), "symbol": symbol}
+ 
+ 
+-async def file_imports(file_path: str, repo_path: str) -> dict[str, Any]:
++async def file_imports(
++    file_path: str, repo_path: str, lang: LanguageProfile | None = None,
++) -> dict[str, Any]:
+     """
+     Extract import statements from a file.
+ 
+     Args:
+         file_path: Path to the file (relative to repo)
+         repo_path: Repository root
++        lang: Language profile (defaults to Python)
+ 
+     Returns:
+         Dict with imports
+     """
+-    import ast
++    from .language import PYTHON
++
++    lang = lang or PYTHON
+ 
+     try:
+         full_path = Path(repo_path) / file_path
+         source = full_path.read_text(encoding="utf-8")
+-        tree = ast.parse(source)
+ 
+-        imports = []
+-        from_imports = []
+-
+-        for node in ast.iter_child_nodes(tree):
+-            if isinstance(node, ast.Import):
+-                for alias in node.names:
+-                    imports.append(alias.name)
+-            elif isinstance(node, ast.ImportFrom):
+-                module = node.module or ""
+-                names = [alias.name for alias in node.names]
+-                from_imports.append({"module": module, "names": names})
+-
+-        return {
+-            "file": file_path,
+-            "imports": imports,
+-            "from_imports": from_imports,
+-        }
++        if lang.name == "python":
++            import ast
++
++            tree = ast.parse(source)
++            imports = []
++            from_imports = []
++
++            for node in ast.iter_child_nodes(tree):
++                if isinstance(node, ast.Import):
++                    for alias in node.names:
++                        imports.append(alias.name)
++                elif isinstance(node, ast.ImportFrom):
++                    module = node.module or ""
++                    names = [alias.name for alias in node.names]
++                    from_imports.append({"module": module, "names": names})
++
++            return {
++                "file": file_path,
++                "imports": imports,
++                "from_imports": from_imports,
++            }
++        else:
++            imports = []
++            for line in source.split("\n"):
++                if lang.matches_import(line):
++                    imports.append(line.strip())
++            return {
++                "file": file_path,
++                "imports": imports,
++                "from_imports": [],
++            }
+     except Exception as e:
+         return {"error": str(e), "file": file_path}
+ 
+diff --git a/ftl_code_expert/prompts/function.py b/ftl_code_expert/prompts/function.py
+index 63a80a0..bce1194 100644
+--- a/ftl_code_expert/prompts/function.py
++++ b/ftl_code_expert/prompts/function.py
+@@ -9,6 +9,7 @@ def build_function_prompt(
+     symbol_source: str,
+     full_file_content: str | None = None,
+     related_tests: list[str] | None = None,
++    language: str = "python",
+ ) -> str:
+     """
+     Build prompt for explaining a specific function or class.
+@@ -19,6 +20,7 @@ def build_function_prompt(
+         symbol_source: Extracted source code of the symbol
+         full_file_content: Full file for additional context
+         related_tests: Paths to related test files
++        language: Language for code fence syntax highlighting
+     """
+     sections = [
+         "You are a senior software engineer explaining code to a colleague.",
+@@ -26,7 +28,7 @@ def build_function_prompt(
+         "",
+         "## Source Code",
+         "",
+-        "```python",
++        f"```{language}",
+         symbol_source,
+         "```",
+         "",
+@@ -38,7 +40,7 @@ def build_function_prompt(
+             "",
+             f"The symbol is defined in `{file_path}`. Here is the full file for context:",
+             "",
+-            "```python",
++            f"```{language}",
+             full_file_content,
+             "```",
+             "",
+diff --git a/ftl_code_expert/prompts/observe.py b/ftl_code_expert/prompts/observe.py
+index 02b9c5c..970910f 100644
+--- a/ftl_code_expert/prompts/observe.py
++++ b/ftl_code_expert/prompts/observe.py
+@@ -21,7 +21,7 @@
+ 
+ | Tool | Purpose | Params |
+ |------|---------|--------|
+-| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
++| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: {default_glob}) |
+ | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
+ | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
+ | `find_symbol` | Find where a class/function is defined | `symbol` |
+@@ -50,6 +50,6 @@
+ """
+ 
+ 
+-def build_observe_prompt(question: str, tree: str) -> str:
++def build_observe_prompt(question: str, tree: str, default_glob: str = "*.py") -> str:
+     """Build the observation-gathering prompt."""
+-    return OBSERVE_PROMPT.format(question=question, tree=tree)
++    return OBSERVE_PROMPT.format(question=question, tree=tree, default_glob=default_glob)
+diff --git a/ftl_code_expert/prompts/verify.py b/ftl_code_expert/prompts/verify.py
+index 4dea558..bbce110 100644
+--- a/ftl_code_expert/prompts/verify.py
++++ b/ftl_code_expert/prompts/verify.py
+@@ -28,7 +28,7 @@
+ 
+ | Tool | Purpose | Params |
+ |------|---------|--------|
+-| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: *.py) |
++| `grep` | Search for a pattern in the codebase | `pattern`, `glob` (default: {default_glob}) |
+ | `read_file` | Read a file's contents | `file_path`, `start_line`, `max_lines` |
+ | `list_directory` | List contents of a directory | `dir_path`, `max_depth` |
+ | `find_symbol` | Find where a class/function is defined | `symbol` |
+
+```
+
+## Your Task
+
+Analyze the diff and identify what additional information you need to render confident verdicts.
+Do NOT render verdicts yet. Only request observations.
+
+## Available Observation Tools
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `exception_hierarchy` | Show exception MRO and subclasses | Retry logic, exception handling |
+| `raises_analysis` | What exceptions a function raises | New function calls, error paths |
+| `call_graph` | What a function calls | Impact analysis |
+| `find_usages` | Where a symbol is used (with prod/test split) | Quick integration lookup |
+| `find_callers` | Caller analysis with prod/test split and calling context | Method signature changes, return type changes, constructor modifications, integration verification |
+| `test_coverage` | Find tests for a file (uses coverage-map if available) | Test coverage claims |
+| `coverage_map_tests` | Find tests covering a file (from coverage-map.json) | Precise test coverage from actual execution |
+| `coverage_map_files` | Find files covered by tests matching a pattern | Impact analysis for test changes |
+| `function_body` | Full source of a function/method | Need complete function context beyond diff hunks |
+| `file_imports` | Extract imports from a file | Verify import changes, check dependencies |
+| `project_dependencies` | Get pyproject.toml/requirements.txt | Verify new imports have dependencies |
+| `related_test_files` | Find test files for a source file | Discover tests by naming, imports, and coverage map |
+| `class_hierarchy` | Show base classes and their `__init__` signatures | Class changes its parent, modifies `__init__`, or uses `super()` |
+| `symbol_migration` | Check if a rename is complete across the repo | Symbol renamed in diff — verify old name is fully removed |
+| `generator_info` | Report whether a function uses `yield` | Function might be a generator — affects return value semantics |
+
+## What to Look For
+
+1. **Exception handling**: Any `retry_if_exception_type`, `except`, or exception class references
+2. **New dependencies**: Calls to external libraries where you don't know the error behavior
+3. **Behavioral changes**: Modified logic where you need to verify callers/callees
+4. **Test claims**: References to tests you can't see in the diff
+5. **Inheritance changes**: Class definition changes, new base classes, `super()` calls
+6. **Renames**: Symbols that appear to have been renamed in the diff
+7. **Factory methods**: Calls to `@classmethod` / `@staticmethod` constructors (e.g. `Result.error(...)`) — request `function_body` to see their implementation
+
+## Output Format
+
+Output a JSON array of observation requests:
+
+```json
+[
+  {"name": "descriptive_name", "tool": "tool_name", "params": {"param": "value"}},
+  ...
+]
+```
+
+If you don't need any observations (simple changes, all context is in the diff), output:
+
+```json
+[]
+```
+
+## Examples
+
+For a diff containing `retry_if_exception_type((OSError, httpx.TransportError))`:
+```json
+[
+  {"name": "oserror_subclasses", "tool": "exception_hierarchy", "params": {"class_name": "builtins.OSError"}},
+  {"name": "transport_errors", "tool": "exception_hierarchy", "params": {"class_name": "httpx.TransportError"}}
+]
+```
+
+For a diff adding a new function that calls `oauth_client.get_access_token()`:
+```json
+[
+  {"name": "oauth_exceptions", "tool": "raises_analysis", "params": {"file_path": "src/auth/oauth.py", "function_name": "get_access_token"}}
+]
+```
+
+For a diff modifying a method but you need the full function to verify:
+```json
+[
+  {"name": "full_getattr", "tool": "function_body", "params": {"file_path": "src/proxy.py", "function_name": "__getattr__"}}
+]
+```
+
+For a diff changing a method signature or return type (verify all callers):
+```json
+[
+  {"name": "handle_request_callers", "tool": "find_callers", "params": {"symbol": "handle_request"}}
+]
+```
+
+For a diff adding new imports (e.g., `import httpx`):
+```json
+[
+  {"name": "file_imports", "tool": "file_imports", "params": {"file_path": "src/client.py"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}}
+]
+```
+
+For a diff calling a factory method like `ModuleResult.error_result(msg)`:
+```json
+[
+  {"name": "error_result_body", "tool": "function_body", "params": {"file_path": "src/models.py", "function_name": "error_result"}}
+]
+```
+
+For a diff where a class changes its parent class:
+```json
+[
+  {"name": "client_hierarchy", "tool": "class_hierarchy", "params": {"class_name": "MyClient", "file_path": "src/client.py"}}
+]
+```
+
+For a diff that renames a symbol (e.g., `OldClient` to `NewClient`):
+```json
+[
+  {"name": "client_rename", "tool": "symbol_migration", "params": {"old_name": "OldClient", "new_name": "NewClient"}}
+]
+```
+
+For a diff modifying a function that might be a generator:
+```json
+[
+  {"name": "process_gen", "tool": "generator_info", "params": {"file_path": "src/pipeline.py", "function_name": "process_items"}}
+]
+```
+
+Now analyze the diff above and output your observation requests as JSON:

@@ -1,0 +1,11 @@
+```json
+[
+  {"name": "with_network_body", "tool": "function_body", "params": {"file_path": "reasons_lib/api.py", "function_name": "_with_network"}},
+  {"name": "with_network_usages", "tool": "find_usages", "params": {"symbol": "_with_network"}},
+  {"name": "verify_function_body", "tool": "function_body", "params": {"file_path": "ftl_code_expert/cli.py", "function_name": "verify"}},
+  {"name": "project_deps", "tool": "project_dependencies", "params": {}},
+  {"name": "verify_tests", "tool": "related_test_files", "params": {"file_path": "ftl_code_expert/cli.py"}},
+  {"name": "with_network_raises", "tool": "raises_analysis", "params": {"file_path": "reasons_lib/api.py", "function_name": "_with_network"}},
+  {"name": "cli_imports", "tool": "file_imports", "params": {"file_path": "ftl_code_expert/cli.py"}}
+]
+```

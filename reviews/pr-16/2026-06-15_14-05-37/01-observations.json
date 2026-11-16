@@ -1,0 +1,143 @@
+{
+  "observations_module_imports": {
+    "file": "ftl_code_expert/observations.py",
+    "imports": [
+      "asyncio",
+      "inspect",
+      "json",
+      "re"
+    ],
+    "from_imports": [
+      {
+        "module": "__future__",
+        "names": [
+          "annotations"
+        ]
+      },
+      {
+        "module": "pathlib",
+        "names": [
+          "Path"
+        ]
+      },
+      {
+        "module": "typing",
+        "names": [
+          "Any"
+        ]
+      }
+    ],
+    "import_section": "\"\"\"\nObservation tools for code explanation.\n\nInstead of dumping entire repo contents into the prompt, the model\nrequests specific observations (grep, file reads, etc.) and gets\ntargeted results back. This keeps prompts focused and fast.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport inspect\nimport json\nimport re\nfrom pathlib import Path\nfrom typing import Any\n\n"
+  },
+  "read_file_body": {
+    "function": "read_file",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 64,
+    "end_line": 96,
+    "source": "async def read_file(file_path: str, repo_path: str, start_line: int = 0, max_lines: int = 200) -> dict[str, Any]:\n    \"\"\"\n    Read a file's contents.\n\n    Args:\n        file_path: Path to the file (relative to repo)\n        repo_path: Repository root\n        start_line: Starting line (0-indexed)\n        max_lines: Maximum lines to return\n\n    Returns:\n        Dict with file content and metadata\n    \"\"\"\n    try:\n        full_path = Path(repo_path) / file_path\n        if not full_path.is_file():\n            return {\"error\": f\"File not found: {file_path}\", \"file\": file_path}\n\n        content = full_path.read_text(encoding=\"utf-8\")\n        lines = content.split(\"\\n\")\n        total_lines = len(lines)\n\n        selected = lines[start_line:start_line + max_lines]\n\n        return {\n            \"file\": file_path,\n            \"total_lines\": total_lines,\n            \"start_line\": start_line,\n            \"lines_returned\": len(selected),\n            \"content\": \"\\n\".join(selected),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"file\": file_path}"
+  },
+  "find_usages_body": {
+    "function": "find_usages",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 201,
+    "end_line": 241,
+    "source": "async def find_usages(symbol: str, repo_path: str) -> dict[str, Any]:\n    \"\"\"\n    Find where a symbol is used (imported, called, referenced).\n\n    Args:\n        symbol: Symbol to search for\n        repo_path: Repository path\n\n    Returns:\n        Dict with usage locations\n    \"\"\"\n    try:\n        proc = await asyncio.create_subprocess_exec(\n            \"grep\", \"-Frn\", \"--include=*.py\", symbol, repo_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE,\n        )\n        try:\n            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)\n        except asyncio.TimeoutError:\n            proc.kill()\n            return {\"error\": \"grep timed out\", \"symbol\": symbol}\n\n        usages = []\n        for line in stdout.decode().strip().split(\"\\n\"):\n            if line and \":\" in line:\n                parts = line.split(\":\", 2)\n                if len(parts) >= 3:\n                    usages.append({\n                        \"file\": parts[0].replace(repo_path + \"/\", \"\"),\n                        \"line\": int(parts[1]),\n                        \"text\": parts[2].strip()[:120],\n                    })\n\n        return {\n            \"symbol\": symbol,\n            \"usages\": usages[:30],\n            \"total_count\": len(usages),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"symbol\": symbol}"
+  },
+  "grep_body": {
+    "function": "grep",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 19,
+    "end_line": 61,
+    "source": "async def grep(pattern: str, repo_path: str, glob: str = \"*.py\", max_results: int = 30) -> dict[str, Any]:\n    \"\"\"\n    Search for a pattern in the codebase.\n\n    Args:\n        pattern: Regex pattern to search for\n        repo_path: Repository path\n        glob: File glob pattern (default: *.py)\n        max_results: Maximum number of results\n\n    Returns:\n        Dict with matching files and lines\n    \"\"\"\n    try:\n        proc = await asyncio.create_subprocess_exec(\n            \"grep\", \"-Ern\", f\"--include={glob}\", pattern, repo_path,\n            stdout=asyncio.subprocess.PIPE,\n            stderr=asyncio.subprocess.PIPE,\n        )\n        try:\n            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)\n        except asyncio.TimeoutError:\n            proc.kill()\n            return {\"error\": \"grep timed out\", \"pattern\": pattern}\n\n        matches = []\n        for line in stdout.decode().strip().split(\"\\n\"):\n            if line and \":\" in line:\n                parts = line.split(\":\", 2)\n                if len(parts) >= 3:\n                    matches.append({\n                        \"file\": parts[0].replace(repo_path + \"/\", \"\"),\n                        \"line\": int(parts[1]),\n                        \"text\": parts[2].strip()[:120],\n                    })\n\n        return {\n            \"pattern\": pattern,\n            \"matches\": matches[:max_results],\n            \"total_count\": len(matches),\n        }\n    except Exception as e:\n        return {\"error\": str(e), \"pattern\": pattern}"
+  },
+  "extract_source_file_body": {
+    "function": "_extract_source_file",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 2986,
+    "end_line": 2998,
+    "source": "def _extract_source_file(entry_path: str, project_dir: str | None = None) -> str | None:\n    \"\"\"Extract source file path from an entry's header line (# File: ...).\"\"\"\n    base = project_dir or \".\"\n    full_path = Path(base) / entry_path\n    if not full_path.is_file():\n        return None\n    try:\n        for line in full_path.read_text().splitlines()[:5]:\n            if line.startswith(\"# File: \"):\n                return line[8:].strip()\n    except OSError:\n        pass\n    return None"
+  },
+  "gather_confirmation_context_body": {
+    "function": "_gather_confirmation_context",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 3043,
+    "end_line": 3061,
+    "source": "async def _gather_confirmation_context(\n    beliefs: list[dict],\n    nodes: dict,\n    repo_path: str,\n    project_dir: str | None = None,\n) -> dict[str, str]:\n    \"\"\"Gather code context for confirming whether beliefs still hold.\"\"\"\n    tasks = [\n        _gather_belief_context(b, nodes, repo_path, project_dir)\n        for b in beliefs\n    ]\n    results = await asyncio.gather(*tasks, return_exceptions=True)\n    contexts: dict[str, str] = {}\n    for i, result in enumerate(results):\n        if isinstance(result, Exception):\n            contexts[beliefs[i][\"id\"]] = \"(error gathering context)\"\n        else:\n            contexts[result[0]] = result[1]\n    return contexts"
+  },
+  "has_reasons_body": {
+    "function": "_has_reasons",
+    "file": "ftl_code_expert/cli.py",
+    "start_line": 156,
+    "end_line": 158,
+    "source": "def _has_reasons() -> bool:\n    \"\"\"Check if ftl-reasons CLI is available.\"\"\"\n    return shutil.which(\"reasons\") is not None"
+  },
+  "parse_observation_requests_body": {
+    "function": "parse_observation_requests",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 348,
+    "end_line": 366,
+    "source": "def parse_observation_requests(response: str) -> list[dict]:\n    \"\"\"Parse observation requests from model response.\"\"\"\n    json_match = re.search(r\"```json\\n(.*?)\\n```\", response, re.DOTALL)\n    if json_match:\n        try:\n            result = json.loads(json_match.group(1))\n            if isinstance(result, list):\n                return result\n        except json.JSONDecodeError:\n            pass\n\n    try:\n        result = json.loads(response.strip())\n        if isinstance(result, list):\n            return result\n    except json.JSONDecodeError:\n        pass\n\n    return []"
+  },
+  "run_observations_body": {
+    "function": "run_observations",
+    "file": "ftl_code_expert/observations.py",
+    "start_line": 317,
+    "end_line": 343,
+    "source": "async def run_observations(observations: list[dict[str, Any]], repo_path: str) -> dict[str, Any]:\n    \"\"\"Run multiple observations in parallel.\"\"\"\n    results = {}\n    tasks = []\n    task_names = []\n\n    for obs in observations:\n        name = obs.get(\"name\", \"unnamed\")\n        tool = obs.get(\"tool\")\n        params = obs.get(\"params\", {})\n\n        if not tool:\n            results[name] = {\"error\": \"No tool specified\"}\n            continue\n\n        tasks.append(run_observation(name, tool, params, repo_path))\n        task_names.append(name)\n\n    if tasks:\n        task_results = await asyncio.gather(*tasks, return_exceptions=True)\n        for name, result in zip(task_names, task_results):\n            if isinstance(result, Exception):\n                results[name] = {\"error\": str(result)}\n            else:\n                results[name] = result[\"result\"]\n\n    return results"
+  },
+  "get_repo_structure_body": {
+    "error": "No function found at 'get_repo_structure'",
+    "file": "ftl_code_expert/cli.py"
+  },
+  "reasons_export_callers": {
+    "symbol": "_reasons_export",
+    "production_callers": [
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 306,
+        "text": "_reasons_export()",
+        "context_function": "init",
+        "context_snippet": "   303:             click.echo(\"Initialized reasons.db\")\n   304:         # Generate beliefs.md from reasons\n   305:         if not Path(\"beliefs.md\").exists():\n>> 306:             _reasons_export()\n   307:     elif not Path(\"beliefs.md\").exists():\n   308:         subprocess.run([\"beliefs\", \"init\"], capture_output=True)\n   309:         click.echo(\"Initialized beliefs.md\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 1672,
+        "text": "_reasons_export()",
+        "context_function": "_accept_proposals",
+        "context_snippet": "   1669:         click.echo(f\"\\nAccepted {added} beliefs ({skipped} existing, {failed} failed)\")\n   1670: \n   1671:         if added > 0:\n>> 1672:             _reasons_export()\n   1673:         return added, skipped, failed\n   1674: \n   1675:     # Try beliefs batch mode"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2208,
+        "text": "def _reasons_export():",
+        "context_function": "_accept_batch",
+        "context_snippet": "   2205:     return True\n   2206: \n   2207: \n>> 2208: def _reasons_export():\n   2209:     \"\"\"Re-export beliefs.md and network.json from reasons after adding beliefs.\"\"\"\n   2210:     beliefs_path = Path(\"beliefs.md\")\n   2211:     network_path = Path(\"network.json\")"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 2793,
+        "text": "_reasons_export()",
+        "context_function": "derive",
+        "context_snippet": "   2790: \n   2791:     # Re-export after derive modifies the database\n   2792:     if (auto_add or exhaust) and not dry_run:\n>> 2793:         _reasons_export()\n   2794: \n   2795: \n   2796: # --- file-issues ---"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 3907,
+        "text": "_reasons_export()",
+        "context_function": "verify",
+        "context_snippet": "   3904: \n   3905:     # Re-export to ensure fresh metadata (fixes stale network.json)\n   3906:     if not dry_run and _has_reasons():\n>> 3907:         _reasons_export()\n   3908: \n   3909:     # Load belief network\n   3910:     try:"
+      },
+      {
+        "file": "ftl_code_expert/cli.py",
+        "line": 4052,
+        "text": "_reasons_export()",
+        "context_function": "verify",
+        "context_snippet": "   4049:                 click.echo(f\"  Retracted: {bid}\", err=True)\n   4050:             else:\n   4051:                 click.echo(f\"  Failed to retract {bid}: {result.stderr.strip()}\", err=True)\n>> 4052:         _reasons_export()\n   4053:         click.echo(\"Network updated.\", err=True)\n   4054:     elif retract and stale:\n   4055:         click.echo(\"\\nCannot retract: reasons CLI not available.\", err=True)"
+      }
+    ],
+    "test_callers": [],
+    "production_count": 6,
+    "test_count": 0,
+    "total_count": 6
+  }
+}
